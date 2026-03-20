@@ -2,6 +2,8 @@
 
 Touch-friendly weather dashboard for an ESP32-S3 display panel using Arduino, LVGL, and PlatformIO.
 
+![Device screenshot](screenshot.png)
+
 ## Features
 
 - Weather Underground PWS current conditions
