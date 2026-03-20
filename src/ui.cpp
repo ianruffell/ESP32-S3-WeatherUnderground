@@ -286,16 +286,17 @@ static lv_obj_t* create_moon_card(lv_obj_t* parent, lv_coord_t x, lv_coord_t y, 
     moon_canvas = lv_canvas_create(card);
     lv_obj_remove_style_all(moon_canvas);
     lv_canvas_set_buffer(moon_canvas, moon_canvas_buffer, MOON_CANVAS_SIZE, MOON_CANVAS_SIZE, LV_COLOR_FORMAT_ARGB8888);
-    lv_obj_align(moon_canvas, LV_ALIGN_CENTER, 0, 8);
+    lv_obj_align(moon_canvas, LV_ALIGN_CENTER, 0, -2);
     draw_moon_phase(0.0f);
 
     moon_phase_label = lv_label_create(card);
     lv_label_set_text(moon_phase_label, "New Moon");
     lv_obj_add_style(moon_phase_label, &unit_style, 0);
+    lv_obj_set_style_text_font(moon_phase_label, &lv_font_montserrat_14, 0);
     lv_obj_set_width(moon_phase_label, w - 28);
     lv_label_set_long_mode(moon_phase_label, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_align(moon_phase_label, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(moon_phase_label, LV_ALIGN_BOTTOM_MID, 0, -12);
+    lv_obj_align(moon_phase_label, LV_ALIGN_BOTTOM_MID, 0, -10);
 
     return card;
 }
