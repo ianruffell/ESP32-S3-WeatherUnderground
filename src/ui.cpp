@@ -1082,9 +1082,9 @@ void ui_init() {
     lv_obj_align(temp_label, LV_ALIGN_TOP_LEFT, 18, 42);
 
     humidity_card_obj = create_card(screen_bg, 16, 156, 140, 147, "Humidity (%)", ChipIcon::humidity, 0x58D6C9, &humidity_label, &humidity_accent_obj, &humidity_chip_obj);
-    wind_card_obj = create_wind_card(screen_bg, 170, 156, 140, 147, &wind_label, &wind_accent_obj, &wind_chip_obj);
-    rain_card_obj = create_card(screen_bg, 324, 156, 140, 147, "Rain (mm)", ChipIcon::rain, 0x69D2FF, &rain_label, &rain_accent_obj, &rain_chip_obj);
-    pressure_card_obj = create_card(screen_bg, 16, 317, 140, 147, "Pressure (hPa)", ChipIcon::pressure, 0xF4C76B, &pressure_label, &pressure_accent_obj, &pressure_chip_obj);
+    rain_card_obj = create_card(screen_bg, 170, 156, 140, 147, "Rain (mm)", ChipIcon::rain, 0x69D2FF, &rain_label, &rain_accent_obj, &rain_chip_obj);
+    pressure_card_obj = create_card(screen_bg, 324, 156, 140, 147, "Pressure (hPa)", ChipIcon::pressure, 0xF4C76B, &pressure_label, &pressure_accent_obj, &pressure_chip_obj);
+    wind_card_obj = create_wind_card(screen_bg, 16, 317, 140, 147, &wind_label, &wind_accent_obj, &wind_chip_obj);
     sun_card_obj = create_sun_card(screen_bg, 170, 317, 140, 147, &sun_accent_obj, &sun_chip_obj);
     moon_card_obj = create_moon_card(screen_bg, 324, 317, 140, 147, &moon_accent_obj, &moon_chip_obj);
 
