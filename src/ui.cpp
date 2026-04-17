@@ -60,6 +60,7 @@ static lv_obj_t* screen_bg;
 static lv_obj_t* bg_glow_top_left;
 static lv_obj_t* bg_glow_bottom_right;
 static lv_obj_t* bg_glow_top_mid;
+static lv_obj_t* location_card_obj;
 static lv_obj_t* clock_card_obj;
 static lv_obj_t* hero_card_obj;
 static lv_obj_t* humidity_card_obj;
@@ -466,6 +467,7 @@ static void apply_page_theme(uint8_t page_index) {
         lv_obj_set_style_bg_color(bg_glow_top_mid, lv_color_hex(theme.glowTopMid), 0);
     }
 
+    apply_card_theme(location_card_obj, theme);
     apply_card_theme(clock_card_obj, theme);
     apply_card_theme(humidity_card_obj, theme);
     apply_card_theme(wind_card_obj, theme);
@@ -753,7 +755,9 @@ static void ensure_portal_page_overlay() {
 
     lv_obj_t* network_title = lv_label_create(network_card);
     lv_label_set_text(network_title, "Connected Network");
-    lv_obj_set_style_text_font(network_title, &lv_font_montserrat_20, 0);
+    lv_obj_set_width(network_title, 164);
+    lv_label_set_long_mode(network_title, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(network_title, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(network_title, lv_color_white(), 0);
     lv_obj_align(network_title, LV_ALIGN_TOP_LEFT, 16, 14);
 
@@ -1021,8 +1025,28 @@ void ui_init() {
     bg_glow_bottom_right = create_glow(screen_bg, 330, 322, 170, 0x185B8A, LV_OPA_20);
     bg_glow_top_mid = create_glow(screen_bg, 244, -36, 120, 0xF0B34A, LV_OPA_10);
 
+    location_card_obj = lv_obj_create(screen_bg);
+    lv_obj_set_pos(location_card_obj, 16, 8);
+    lv_obj_set_size(location_card_obj, 448, 32);
+    lv_obj_add_style(location_card_obj, &card_style, 0);
+    lv_obj_clear_flag(location_card_obj, LV_OBJ_FLAG_SCROLLABLE);
+
+    station_label = lv_label_create(location_card_obj);
+    lv_label_set_text(station_label, "Marlow Weather");
+    lv_obj_add_style(station_label, &eyebrow_style, 0);
+    lv_obj_set_width(station_label, 416);
+    lv_label_set_long_mode(station_label, LV_LABEL_LONG_CLIP);
+    lv_obj_set_style_text_font(station_label, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_align(station_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(station_label, LV_ALIGN_CENTER, 0, 0);
+
+    page_indicator_label = lv_label_create(location_card_obj);
+    lv_label_set_text(page_indicator_label, "1/1");
+    lv_obj_add_style(page_indicator_label, &unit_style, 0);
+    lv_obj_align(page_indicator_label, LV_ALIGN_RIGHT_MID, -14, 0);
+
     clock_card_obj = lv_obj_create(screen_bg);
-    lv_obj_set_pos(clock_card_obj, 16, 16);
+    lv_obj_set_pos(clock_card_obj, 16, 44);
     lv_obj_set_size(clock_card_obj, 216, 126);
     lv_obj_add_style(clock_card_obj, &card_style, 0);
     lv_obj_clear_flag(clock_card_obj, LV_OBJ_FLAG_SCROLLABLE);
@@ -1030,22 +1054,17 @@ void ui_init() {
     clock_chip_obj = create_icon_chip(clock_card_obj, ChipIcon::clock, 178, 18, 0x6BD5F9);
 
     hero_card_obj = lv_obj_create(screen_bg);
-    lv_obj_set_pos(hero_card_obj, 248, 16);
+    lv_obj_set_pos(hero_card_obj, 248, 44);
     lv_obj_set_size(hero_card_obj, 216, 126);
     lv_obj_add_style(hero_card_obj, &hero_card_style, 0);
     lv_obj_clear_flag(hero_card_obj, LV_OBJ_FLAG_SCROLLABLE);
     hero_accent_obj = create_card_accent(hero_card_obj, 216, 0xF5D07A);
     hero_chip_obj = create_icon_chip(hero_card_obj, ChipIcon::station, 178, 18, 0xF5D07A);
 
-    station_label = lv_label_create(hero_card_obj);
-    lv_label_set_text(station_label, "Marlow Weather");
-    lv_obj_add_style(station_label, &eyebrow_style, 0);
-    lv_obj_align(station_label, LV_ALIGN_TOP_LEFT, 18, 16);
-
-    page_indicator_label = lv_label_create(hero_card_obj);
-    lv_label_set_text(page_indicator_label, "1/1");
-    lv_obj_add_style(page_indicator_label, &unit_style, 0);
-    lv_obj_align(page_indicator_label, LV_ALIGN_BOTTOM_RIGHT, -18, -14);
+    lv_obj_t* temperature_title = lv_label_create(hero_card_obj);
+    lv_label_set_text(temperature_title, "Temperature");
+    lv_obj_add_style(temperature_title, &title_style, 0);
+    lv_obj_align(temperature_title, LV_ALIGN_TOP_LEFT, 18, 16);
 
     time_label = lv_label_create(clock_card_obj);
     lv_label_set_text(time_label, "--:--:--");
@@ -1079,14 +1098,14 @@ void ui_init() {
     temp_label = lv_label_create(hero_card_obj);
     lv_label_set_text(temp_label, "--.-\xC2\xB0 C");
     lv_obj_add_style(temp_label, &hero_value_style, 0);
-    lv_obj_align(temp_label, LV_ALIGN_TOP_LEFT, 18, 42);
+    lv_obj_align(temp_label, LV_ALIGN_TOP_LEFT, 18, 46);
 
-    humidity_card_obj = create_card(screen_bg, 16, 156, 140, 147, "Humidity (%)", ChipIcon::humidity, 0x58D6C9, &humidity_label, &humidity_accent_obj, &humidity_chip_obj);
-    rain_card_obj = create_card(screen_bg, 170, 156, 140, 147, "Rain (mm)", ChipIcon::rain, 0x69D2FF, &rain_label, &rain_accent_obj, &rain_chip_obj);
-    pressure_card_obj = create_card(screen_bg, 324, 156, 140, 147, "Pressure (hPa)", ChipIcon::pressure, 0xF4C76B, &pressure_label, &pressure_accent_obj, &pressure_chip_obj);
-    wind_card_obj = create_wind_card(screen_bg, 16, 317, 140, 147, &wind_label, &wind_accent_obj, &wind_chip_obj);
-    sun_card_obj = create_sun_card(screen_bg, 170, 317, 140, 147, &sun_accent_obj, &sun_chip_obj);
-    moon_card_obj = create_moon_card(screen_bg, 324, 317, 140, 147, &moon_accent_obj, &moon_chip_obj);
+    humidity_card_obj = create_card(screen_bg, 16, 174, 140, 147, "Humidity (%)", ChipIcon::humidity, 0x58D6C9, &humidity_label, &humidity_accent_obj, &humidity_chip_obj);
+    rain_card_obj = create_card(screen_bg, 170, 174, 140, 147, "Rain (mm)", ChipIcon::rain, 0x69D2FF, &rain_label, &rain_accent_obj, &rain_chip_obj);
+    pressure_card_obj = create_card(screen_bg, 324, 174, 140, 147, "Pressure (hPa)", ChipIcon::pressure, 0xF4C76B, &pressure_label, &pressure_accent_obj, &pressure_chip_obj);
+    wind_card_obj = create_wind_card(screen_bg, 16, 325, 140, 147, &wind_label, &wind_accent_obj, &wind_chip_obj);
+    sun_card_obj = create_sun_card(screen_bg, 170, 325, 140, 147, &sun_accent_obj, &sun_chip_obj);
+    moon_card_obj = create_moon_card(screen_bg, 324, 325, 140, 147, &moon_accent_obj, &moon_chip_obj);
 
     apply_page_theme(0);
 
