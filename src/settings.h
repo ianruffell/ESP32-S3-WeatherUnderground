@@ -17,7 +17,9 @@ struct DeviceSettings {
     String deviceName;
     String wifiSsid;
     String wifiPassword;
+    String weatherProvider;
     String weatherApiKey;
+    String proWeatherLiveToken;
     WeatherPageSettings weatherPages[MAX_WEATHER_PAGES];
     uint8_t weatherPageCount;
     String timeZone;

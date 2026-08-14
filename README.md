@@ -1,4 +1,4 @@
-# ESP32-S3 Weather Underground Display
+# ESP32-S3 Weather Display
 
 Touch-friendly weather dashboard for an ESP32-S3 display panel using Arduino, LVGL, and PlatformIO.
 
@@ -6,12 +6,14 @@ Touch-friendly weather dashboard for an ESP32-S3 display panel using Arduino, LV
 
 ## Features
 
-- Weather Underground PWS current conditions
+- Instrument-cluster dashboard: black canvas, outlined state tags, hairline rules
+- ProWeatherLive or Weather Underground PWS current conditions
 - Swipeable weather pages for up to 5 locations
-- Clock, date, sunrise, sunset, and moon phase
-- Wind speed card with compass-style direction needle
-- Wi-Fi status indicator on the time panel
-- On-device setup portal for Wi-Fi and Weather Underground settings
+- Analog clock face alongside digital time, date, sunrise, sunset, and moon phase
+- Temperature and pressure trend graphs, kept per location
+- Wind speed with compass dial and cardinal direction
+- Wi-Fi and data status indicators in the header
+- On-device setup portal for Wi-Fi and weather-provider settings
 - QR code page for opening the setup portal from the local network
 - Automatic weather retry backoff when API requests fail
 
@@ -57,10 +59,33 @@ Touch-friendly weather dashboard for an ESP32-S3 display panel using Arduino, LV
 Most user-facing configuration is handled through the setup web portal:
 
 - Wi-Fi SSID and password
-- Weather Underground API key
+- Weather provider
+- Weather Underground API key or ProWeatherLive access token
 - Station IDs / location pages
 
 Static defaults and hardware mappings live in `src/config.h`.
+
+### ProWeatherLive
+
+ProWeatherLive does not publish a supported read API. This integration follows the
+authenticated services used by its own dashboard, so a future service update may
+require a firmware update.
+
+1. Log in to `https://proweatherlive.net` in a desktop browser.
+2. Open the browser developer console on that page and run:
+
+```javascript
+copy(JSON.parse(localStorage.getItem("login")).jwt)
+```
+
+3. Open the ESP32 setup page, choose **ProWeatherLive**, paste the copied value
+   into **ProWeatherLive access token**, and enter the station's WSID as its
+   Station ID.
+4. Save and restart.
+
+The token is a sensitive account credential. Enter it only on the local setup
+page, do not commit it to this repository, and replace it if it is exposed. The
+station key/WSPD is an upload credential and is not used by this firmware.
 
 ## Notes
 

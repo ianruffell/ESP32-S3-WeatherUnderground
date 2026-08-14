@@ -319,10 +319,17 @@ static void applySettingsToRuntime() {
     deviceSettings.sanitizeWeatherPages();
     clampActiveWeatherPageIndex();
 
+    const String credential = deviceSettings.weatherProvider == "proweatherlive"
+        ? deviceSettings.proWeatherLiveToken
+        : deviceSettings.weatherApiKey;
     if (weatherApi == nullptr) {
-        weatherApi = new WeatherAPI("", deviceSettings.weatherApiKey.c_str());
+        weatherApi = new WeatherAPI(
+            deviceSettings.weatherProvider.c_str(),
+            "",
+            credential.c_str()
+        );
     } else {
-        weatherApi->setCredentials("", deviceSettings.weatherApiKey);
+        weatherApi->setCredentials(deviceSettings.weatherProvider, "", credential);
     }
 
     for (uint8_t i = 0; i < MAX_WEATHER_PAGES; ++i) {
@@ -459,7 +466,14 @@ static bool fetchWeatherPages() {
         const bool hadPreviousPressure = weatherPages[i].isValid;
 
         WeatherData fetched = weatherPages[i];
-        weatherApi->setCredentials(deviceSettings.weatherPages[i].stationId, deviceSettings.weatherApiKey);
+        const String credential = deviceSettings.weatherProvider == "proweatherlive"
+            ? deviceSettings.proWeatherLiveToken
+            : deviceSettings.weatherApiKey;
+        weatherApi->setCredentials(
+            deviceSettings.weatherProvider,
+            deviceSettings.weatherPages[i].stationId,
+            credential
+        );
 
         if (!weatherApi->fetchWeatherData(fetched)) {
             Serial.println("Failed to fetch weather data for page");

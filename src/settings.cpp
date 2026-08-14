@@ -23,7 +23,10 @@ bool DeviceSettings::hasWiFiCredentials() const {
 }
 
 bool DeviceSettings::hasWeatherCredentials() const {
-    return !weatherApiKey.isEmpty() && configuredWeatherPageCount() > 0;
+    const bool hasProviderCredential = weatherProvider == "proweatherlive"
+        ? !proWeatherLiveToken.isEmpty()
+        : !weatherApiKey.isEmpty();
+    return hasProviderCredential && configuredWeatherPageCount() > 0;
 }
 
 uint8_t DeviceSettings::configuredWeatherPageCount() const {
@@ -61,6 +64,12 @@ String DeviceSettings::weatherPageTitle(uint8_t index) const {
 }
 
 void DeviceSettings::sanitizeWeatherPages() {
+    weatherProvider.trim();
+    weatherProvider.toLowerCase();
+    if (weatherProvider != "proweatherlive") {
+        weatherProvider = "wunderground";
+    }
+
     WeatherPageSettings compact[MAX_WEATHER_PAGES];
     uint8_t compactCount = 0;
 
@@ -113,14 +122,16 @@ bool SettingsStore::load(DeviceSettings& settings) {
     settings = defaults();
 
     uint32_t version = preferences.getUInt("version", 0);
-    if (version != SETTINGS_VERSION) {
+    if (version != 2 && version != SETTINGS_VERSION) {
         return false;
     }
 
     settings.deviceName = readString("device_name", settings.deviceName);
     settings.wifiSsid = readString("wifi_ssid", settings.wifiSsid);
     settings.wifiPassword = readString("wifi_pass", settings.wifiPassword);
+    settings.weatherProvider = readString("provider", settings.weatherProvider);
     settings.weatherApiKey = readString("api_key", settings.weatherApiKey);
+    settings.proWeatherLiveToken = readString("pwl_token", settings.proWeatherLiveToken);
     settings.weatherPageCount = preferences.getUChar("page_count", settings.weatherPageCount);
     settings.timeZone = readString("time_zone", settings.timeZone);
     settings.ntpServer1 = readString("ntp_1", settings.ntpServer1);
@@ -165,7 +176,9 @@ bool SettingsStore::save(const DeviceSettings& settings) {
     ok &= preferences.putString("device_name", normalized.deviceName) > 0;
     ok &= preferences.putString("wifi_ssid", normalized.wifiSsid) >= 0;
     ok &= preferences.putString("wifi_pass", normalized.wifiPassword) >= 0;
+    ok &= preferences.putString("provider", normalized.weatherProvider) >= 0;
     ok &= preferences.putString("api_key", normalized.weatherApiKey) >= 0;
+    ok &= preferences.putString("pwl_token", normalized.proWeatherLiveToken) >= 0;
     ok &= preferences.putUChar("page_count", normalized.weatherPageCount) > 0;
     ok &= preferences.putString("time_zone", normalized.timeZone) >= 0;
     ok &= preferences.putString("ntp_1", normalized.ntpServer1) >= 0;
@@ -226,7 +239,9 @@ DeviceSettings SettingsStore::defaults() {
     settings.deviceName = DEFAULT_DEVICE_NAME;
     settings.wifiSsid = WIFI_SSID;
     settings.wifiPassword = WIFI_PASSWORD;
+    settings.weatherProvider = "wunderground";
     settings.weatherApiKey = WEATHER_API_KEY;
+    settings.proWeatherLiveToken = "";
     settings.weatherPageCount = 1;
     settings.weatherPages[0].name = "Location 1";
     settings.weatherPages[0].stationId = WEATHER_STATION_ID;

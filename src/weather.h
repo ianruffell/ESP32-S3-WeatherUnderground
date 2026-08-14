@@ -28,14 +28,15 @@ struct WeatherData {
 
 class WeatherAPI {
 public:
-    WeatherAPI(const char* stationId, const char* apiKey);
+    WeatherAPI(const char* provider, const char* stationId, const char* credential);
     bool fetchWeatherData(WeatherData& data);
     bool isConnected();
-    void setCredentials(const String& stationId, const String& apiKey);
+    void setCredentials(const String& provider, const String& stationId, const String& credential);
 
 private:
+    String provider;
     String stationId;
-    String apiKey;
+    String credential;
     bool fetchFromWunderground(WeatherData& data);
     bool fetchFromProWeatherLive(WeatherData& data);
 };

@@ -87,7 +87,12 @@ public:
         pendingSettings = currentSettings;
         pendingSettings.wifiSsid = trimCopy(server.arg("wifi_ssid"));
         pendingSettings.wifiPassword = server.arg("wifi_password");
+        pendingSettings.weatherProvider = trimCopy(server.arg("weather_provider"));
         pendingSettings.weatherApiKey = trimCopy(server.arg("api_key"));
+        String proWeatherLiveToken = trimCopy(server.arg("pwl_token"));
+        if (!proWeatherLiveToken.isEmpty()) {
+            pendingSettings.proWeatherLiveToken = proWeatherLiveToken;
+        }
 
         int requestedPageCount = server.arg("page_count").toInt();
         if (requestedPageCount < 1) {
@@ -148,7 +153,7 @@ public:
         html += F(".hero,.card{background:linear-gradient(180deg,#102737,#17384d);border:1px solid #2b5168;border-radius:20px;padding:20px;box-shadow:0 20px 50px rgba(0,0,0,.25)}");
         html += F(".hero{margin-bottom:20px}.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}.card{margin-bottom:16px}");
         html += F(".stack{display:grid;gap:16px}.location-card{background:#0d1d28;border:1px solid #2a5067;border-radius:18px;padding:16px}.location-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}");
-        html += F("label{display:block;font-size:13px;color:#a6c7da;margin-bottom:6px}input{width:100%;box-sizing:border-box;padding:12px 14px;border-radius:12px;border:1px solid #31556b;background:#08131b;color:#f5fbff}");
+        html += F("label{display:block;font-size:13px;color:#a6c7da;margin-bottom:6px}input,select{width:100%;box-sizing:border-box;padding:12px 14px;border-radius:12px;border:1px solid #31556b;background:#08131b;color:#f5fbff}");
         html += F("button{border:0;border-radius:999px;padding:14px 22px;background:#69d2ff;color:#08202c;font-weight:700;cursor:pointer}button.secondary{background:#103041;color:#d8ebf6;border:1px solid #31556b}button.remove-location{padding:10px 16px;background:#203847;color:#dbeaf3}");
         html += F("button.remove-location:disabled{opacity:.45;cursor:not-allowed}h1,h2,h3{margin:0 0 12px}p{margin:0 0 10px;color:#bad0df}.pill{display:inline-block;padding:6px 10px;border-radius:999px;background:#0d1c25;border:1px solid #2e556b;margin:0 8px 8px 0;color:#d8ebf6}");
         html += F("</style></head><body><main>");
@@ -172,9 +177,15 @@ public:
         html += field("Wi-Fi password", "wifi_password", currentSettings.wifiPassword, true);
         html += F("</div></section>");
 
-        html += F("<section class='card'><h2>Weather Service</h2><div class='row'>");
-        html += field("API key", "api_key", currentSettings.weatherApiKey, true);
-        html += F("</div></section>");
+        html += F("<section class='card'><h2>Weather Service</h2><div class='row'><div><label for='weather_provider'>Provider</label><select id='weather_provider' name='weather_provider'>");
+        html += F("<option value='wunderground'");
+        html += currentSettings.weatherProvider == "wunderground" ? F(" selected") : F("");
+        html += F(">Weather Underground</option><option value='proweatherlive'");
+        html += currentSettings.weatherProvider == "proweatherlive" ? F(" selected") : F("");
+        html += F(">ProWeatherLive</option></select></div>");
+        html += field("Weather Underground API key", "api_key", currentSettings.weatherApiKey, true);
+        html += field("ProWeatherLive access token", "pwl_token", "", true);
+        html += F("</div><p>A blank ProWeatherLive token keeps the currently saved token. Obtain it while logged in to ProWeatherLive; never use the station upload key here.</p></section>");
 
         html += F("<section class='card'><div class='location-head'><div><h2>Location Pages</h2><p>Add the stations you want to swipe between on the display. Timezone and coordinates are filled automatically after the station is fetched.</p></div>");
         html += F("<button type='button' class='secondary' id='add-location'>Add Location</button></div>");

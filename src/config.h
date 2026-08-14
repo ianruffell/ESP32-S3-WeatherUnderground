@@ -13,7 +13,7 @@
 #define WIFI_CONNECT_TIMEOUT_MS 15000
 #define WIFI_RETRY_INTERVAL_MS 10000
 #define SETTINGS_NAMESPACE "weathercfg"
-#define SETTINGS_VERSION 2
+#define SETTINGS_VERSION 3
 #define DEFAULT_DEVICE_NAME "weather-display"
 #define SETUP_AP_SUFFIX "-Setup"
 
