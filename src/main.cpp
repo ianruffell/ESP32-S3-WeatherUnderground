@@ -9,6 +9,8 @@
 #include "weather.h"
 #include "web_ui.h"
 #include "ui.h"
+#include "aircraft.h"
+#include <nvs.h>
 
 Arduino_ESP32RGBPanel* displayBus = nullptr;
 Arduino_ST7701_RGBPanel* panel = nullptr;
@@ -36,11 +38,20 @@ bool setupRequired = false;
 bool swipeTracking = false;
 bool swipeConsumed = false;
 bool showingPortalQrPage = false;
+bool showingTrafficPage = false;
 bool lastPortalQrPageVisible = false;
 uint8_t consecutiveWeatherFailures = 0;
 int16_t swipeStartX = 0;
 int16_t swipeStartY = 0;
 uint8_t activeWeatherPageIndex = 0;
+unsigned long lastTrafficFetch = 0;
+unsigned long lastPageAdvance = 0;
+AircraftAPI aircraftApi;
+TrafficData trafficData;
+AirlineLogo airlineLogo;
+bool airlineLogoValid = false;
+RouteInfo aircraftRoute;
+bool aircraftRouteValid = false;
 String setupApSsid;
 
 static bool hasCompletedSetup(const DeviceSettings& settings) {
@@ -67,12 +78,20 @@ static bool portalQrPageAvailable() {
     return !setupApActive && portalStarted && WiFi.status() == WL_CONNECTED;
 }
 
+static bool trafficPageAvailable() {
+    return !setupApActive && deviceSettings.trafficEnabled && WiFi.status() == WL_CONNECTED;
+}
+
 static uint8_t totalDisplayPageCount() {
-    return primaryDisplayPageCount() + (portalQrPageAvailable() ? 1 : 0);
+    return primaryDisplayPageCount() + (trafficPageAvailable() ? 1 : 0) + (portalQrPageAvailable() ? 1 : 0);
+}
+
+static uint8_t trafficPageIndex() {
+    return primaryDisplayPageCount();
 }
 
 static uint8_t portalQrPageIndex() {
-    return primaryDisplayPageCount();
+    return primaryDisplayPageCount() + (trafficPageAvailable() ? 1 : 0);
 }
 
 static String currentSetupPageUrl() {
@@ -160,6 +179,73 @@ static void showActiveWeatherPage(bool showLoadingWhenEmpty = true) {
     }
 }
 
+static void primaryStationLocation(double& latitude, double& longitude) {
+    // "Main weather location": the first configured page, preferring the
+    // coordinates the weather provider reported over the stored ones.
+    if (weatherPages[0].isValid && (weatherPages[0].latitude != 0.0f || weatherPages[0].longitude != 0.0f)) {
+        latitude = weatherPages[0].latitude;
+        longitude = weatherPages[0].longitude;
+        return;
+    }
+
+    const WeatherPageSettings& page = deviceSettings.weatherPages[0];
+    if (page.latitude != 0.0f || page.longitude != 0.0f) {
+        latitude = page.latitude;
+        longitude = page.longitude;
+        return;
+    }
+
+    latitude = LOCATION_LAT;
+    longitude = LOCATION_LON;
+}
+
+static void refreshTrafficData(bool force) {
+    if (!trafficPageAvailable()) {
+        return;
+    }
+
+    const unsigned long now = millis();
+    if (!force && trafficData.isValid && (now - lastTrafficFetch) < TRAFFIC_UPDATE_INTERVAL_MS) {
+        return;
+    }
+
+    double latitude = 0.0;
+    double longitude = 0.0;
+    primaryStationLocation(latitude, longitude);
+
+    // Stamped even on failure so a broken feed is not polled every loop.
+    lastTrafficFetch = now;
+    if (!aircraftApi.fetchTraffic(latitude, longitude, deviceSettings.trafficRadiusNm, trafficData)) {
+        return;
+    }
+
+    airlineLogoValid = false;
+    aircraftRouteValid = false;
+    if (trafficData.count > 0) {
+        if (trafficData.aircraft[0].airlineIata != nullptr) {
+            airlineLogoValid = aircraftApi.fetchAirlineLogo(trafficData.aircraft[0].airlineIata, airlineLogo);
+        }
+        aircraftRouteValid = aircraftApi.fetchRoute(trafficData.aircraft[0].callsign, aircraftRoute);
+    }
+}
+
+static void showTrafficPage() {
+    if (!trafficPageAvailable()) {
+        return;
+    }
+
+    showingTrafficPage = true;
+    showingPortalQrPage = false;
+    ui_hide_portal_page();
+    ui_update_page("Air Traffic", trafficPageIndex(), totalDisplayPageCount());
+    refreshTrafficData(false);
+    ui_show_traffic_page(
+                    trafficData,
+                    airlineLogoValid ? &airlineLogo : nullptr,
+                    aircraftRouteValid ? &aircraftRoute : nullptr
+                );
+}
+
 static void showPortalQrPage() {
     if (!portalQrPageAvailable()) {
         return;
@@ -168,6 +254,8 @@ static void showPortalQrPage() {
     String url = currentSetupPageUrl();
     String ssid = WiFi.SSID();
     showingPortalQrPage = true;
+    showingTrafficPage = false;
+    ui_hide_traffic_page();
     ui_update_page("Setup Page", portalQrPageIndex(), totalDisplayPageCount());
     ui_show_portal_page(ssid.c_str(), url.c_str());
 }
@@ -519,21 +607,44 @@ static bool fetchWeatherPages() {
     return anySuccess;
 }
 
-static void switchDisplayPage(int direction) {
+static void switchDisplayPage(int direction, bool skipPortalPage = false) {
     const uint8_t weatherPageCount = configuredWeatherPageCount();
     const uint8_t pageCount = totalDisplayPageCount();
     if (pageCount < 2) {
         return;
     }
 
-    const int currentIndex = showingPortalQrPage
-        ? static_cast<int>(portalQrPageIndex())
-        : (weatherPageCount == 0 ? 0 : static_cast<int>(activeWeatherPageIndex));
+    lastPageAdvance = millis();
+
+    int currentIndex;
+    if (showingPortalQrPage) {
+        currentIndex = static_cast<int>(portalQrPageIndex());
+    } else if (showingTrafficPage) {
+        currentIndex = static_cast<int>(trafficPageIndex());
+    } else {
+        currentIndex = weatherPageCount == 0 ? 0 : static_cast<int>(activeWeatherPageIndex);
+    }
     int nextIndex = currentIndex + direction;
     if (nextIndex < 0) {
         nextIndex = pageCount - 1;
     } else if (nextIndex >= pageCount) {
         nextIndex = 0;
+    }
+
+    // The setup QR page is only worth showing on purpose, so the automatic
+    // rotation steps over it. Swiping still reaches it.
+    if (skipPortalPage && portalQrPageAvailable() && nextIndex == portalQrPageIndex()) {
+        nextIndex += direction;
+        if (nextIndex < 0) {
+            nextIndex = pageCount - 1;
+        } else if (nextIndex >= pageCount) {
+            nextIndex = 0;
+        }
+    }
+
+    if (trafficPageAvailable() && nextIndex == trafficPageIndex()) {
+        showTrafficPage();
+        return;
     }
 
     if (portalQrPageAvailable() && nextIndex == portalQrPageIndex()) {
@@ -542,7 +653,9 @@ static void switchDisplayPage(int direction) {
     }
 
     showingPortalQrPage = false;
+    showingTrafficPage = false;
     ui_hide_portal_page();
+    ui_hide_traffic_page();
     if (weatherPageCount > 0) {
         activeWeatherPageIndex = static_cast<uint8_t>(nextIndex);
     }
@@ -598,6 +711,21 @@ void setup() {
 
     settingsStore.begin();
     bool hasSavedSettings = settingsStore.load(deviceSettings);
+    {
+        nvs_stats_t nvsStats = {};
+        nvs_get_stats(NULL, &nvsStats);
+        log_i(
+            "[settings] loaded=%d pages=%u count_field=%u station0='%s' traffic=%u/%unm nvs_free=%u/%u",
+            hasSavedSettings ? 1 : 0,
+            deviceSettings.configuredWeatherPageCount(),
+            deviceSettings.weatherPageCount,
+            deviceSettings.weatherPages[0].stationId.c_str(),
+            deviceSettings.trafficEnabled ? 1 : 0,
+            deviceSettings.trafficRadiusNm,
+            nvsStats.free_entries,
+            nvsStats.total_entries
+        );
+    }
     setupRequired = !hasSavedSettings || !hasCompletedSetup(deviceSettings);
     applySettingsToRuntime();
 
@@ -705,8 +833,27 @@ void loop() {
         if (showingPortalQrPage && portalPageAvailable) {
             showPortalQrPage();
         }
+        if (showingTrafficPage) {
+            if (!trafficPageAvailable()) {
+                showingTrafficPage = false;
+                ui_hide_traffic_page();
+                showActiveWeatherPage(false);
+            } else if ((millis() - lastTrafficFetch) >= TRAFFIC_UPDATE_INTERVAL_MS) {
+                refreshTrafficData(true);
+                ui_show_traffic_page(
+                    trafficData,
+                    airlineLogoValid ? &airlineLogo : nullptr,
+                    aircraftRouteValid ? &aircraftRoute : nullptr
+                );
+            }
+        }
         updateAstronomyIfNeeded();
         lastClockUpdate = millis();
+    }
+
+    if (!setupApActive && totalDisplayPageCount() > 1 &&
+        (millis() - lastPageAdvance) >= PAGE_AUTO_ADVANCE_MS) {
+        switchDisplayPage(1, true);
     }
 
     if (WiFi.status() == WL_CONNECTED && deviceSettings.hasWeatherCredentials()) {

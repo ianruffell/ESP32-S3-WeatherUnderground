@@ -4,6 +4,7 @@
 #include <Arduino_GFX_Library.h>
 #include <time.h>
 #include <lvgl.h>
+#include <misc/cache/instance/lv_image_cache.h>
 
 extern Arduino_ESP32RGBPanel* displayBus;
 extern Arduino_ST7701_RGBPanel* panel;
@@ -41,6 +42,23 @@ static lv_obj_t* refresh_label;
 static lv_obj_t* wifi_status_label;
 static lv_obj_t* page_indicator_label;
 static lv_obj_t* portal_page_overlay;
+static constexpr int TRAFFIC_LIST_ROWS = 4;
+static lv_obj_t* traffic_overlay;
+static lv_obj_t* traffic_page_indicator;
+static lv_obj_t* traffic_range_label;
+static lv_obj_t* traffic_logo_image;
+static lv_obj_t* traffic_callsign_label;
+static lv_obj_t* traffic_airline_label;
+static lv_obj_t* traffic_aircraft_label;
+static lv_obj_t* traffic_route_label;
+static lv_obj_t* traffic_route_city_label;
+static lv_obj_t* traffic_metric_labels[4];
+static lv_obj_t* traffic_row_callsign[TRAFFIC_LIST_ROWS];
+static lv_obj_t* traffic_row_airline[TRAFFIC_LIST_ROWS];
+static lv_obj_t* traffic_row_detail[TRAFFIC_LIST_ROWS];
+static lv_obj_t* traffic_footer_label;
+static lv_image_dsc_t traffic_logo_dsc;
+static char traffic_page_text[16];
 static lv_obj_t* portal_page_ssid_label;
 static lv_obj_t* portal_page_url_label;
 static lv_obj_t* portal_page_qr;
@@ -73,6 +91,8 @@ static TagWidget temp_tag;
 static TagWidget wind_tag;
 static TagWidget humidity_tag;
 static TagWidget rain_tag;
+static TagWidget traffic_title_tag;
+static TagWidget traffic_operator_tag;
 
 static constexpr int CLOCK_SIZE = 140;
 static constexpr int CLOCK_CENTER = CLOCK_SIZE / 2;
@@ -133,6 +153,7 @@ static void configure_panel_variant();
 static void apply_page_theme(uint8_t page_index);
 static void ensure_portal_page_overlay();
 static void ensure_setup_overlay();
+static void ensure_traffic_overlay();
 
 static void to_upper_copy(const char* src, char* dst, size_t dst_size, size_t max_chars) {
     if (dst == nullptr || dst_size == 0) {
@@ -676,6 +697,118 @@ static void style_overlay_qr(lv_obj_t* qr) {
     lv_qrcode_set_light_color(qr, lv_color_hex(0xF2F2F2));
 }
 
+static void ensure_traffic_overlay() {
+    if (traffic_overlay != nullptr) {
+        return;
+    }
+
+    traffic_overlay = lv_obj_create(lv_scr_act());
+    lv_obj_remove_style_all(traffic_overlay);
+    lv_obj_set_size(traffic_overlay, DISPLAY_WIDTH, DISPLAY_HEIGHT);
+    force_black_background(traffic_overlay);
+    lv_obj_clear_flag(traffic_overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(traffic_overlay, LV_OBJ_FLAG_HIDDEN);
+
+    traffic_title_tag = create_tag(traffic_overlay, "AIR TRAFFIC", 18, 10, 0x4FC3F7);
+
+    traffic_page_indicator = lv_label_create(traffic_overlay);
+    lv_label_set_text(traffic_page_indicator, "");
+    lv_obj_add_style(traffic_page_indicator, &micro_style, 0);
+    lv_obj_align(traffic_page_indicator, LV_ALIGN_TOP_RIGHT, -18, 14);
+
+    traffic_range_label = lv_label_create(traffic_overlay);
+    lv_label_set_text(traffic_range_label, "");
+    lv_obj_add_style(traffic_range_label, &micro_style, 0);
+    lv_obj_align(traffic_range_label, LV_ALIGN_TOP_RIGHT, -58, 14);
+
+    create_rule(traffic_overlay, 18, 44, 444, COLOR_RULE);
+
+    // Featured aircraft: the closest one in range.
+    traffic_logo_image = lv_image_create(traffic_overlay);
+    lv_obj_set_pos(traffic_logo_image, 18, 58);
+    lv_obj_add_flag(traffic_logo_image, LV_OBJ_FLAG_HIDDEN);
+
+    traffic_operator_tag = create_tag(traffic_overlay, "---", 18, 74, 0x4FC3F7);
+    lv_obj_add_flag(traffic_operator_tag.box, LV_OBJ_FLAG_HIDDEN);
+
+    traffic_callsign_label = lv_label_create(traffic_overlay);
+    lv_label_set_text(traffic_callsign_label, "NO CONTACTS");
+    lv_obj_add_style(traffic_callsign_label, &metric_value_style, 0);
+    lv_obj_set_pos(traffic_callsign_label, 96, 56);
+
+    traffic_airline_label = lv_label_create(traffic_overlay);
+    lv_label_set_text(traffic_airline_label, "");
+    lv_obj_add_style(traffic_airline_label, &date_style, 0);
+    lv_obj_set_style_text_align(traffic_airline_label, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_set_width(traffic_airline_label, 250);
+    lv_label_set_long_mode(traffic_airline_label, LV_LABEL_LONG_DOT);
+    lv_obj_set_pos(traffic_airline_label, 96, 100);
+
+    traffic_aircraft_label = lv_label_create(traffic_overlay);
+    lv_label_set_text(traffic_aircraft_label, "");
+    lv_obj_add_style(traffic_aircraft_label, &micro_style, 0);
+    lv_obj_set_style_text_align(traffic_aircraft_label, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_align(traffic_aircraft_label, LV_ALIGN_TOP_RIGHT, -18, 105);
+
+    traffic_route_label = lv_label_create(traffic_overlay);
+    lv_label_set_text(traffic_route_label, "");
+    lv_obj_add_style(traffic_route_label, &compact_value_style, 0);
+    lv_obj_set_pos(traffic_route_label, 96, 124);
+
+    traffic_route_city_label = lv_label_create(traffic_overlay);
+    lv_label_set_text(traffic_route_city_label, "");
+    lv_obj_add_style(traffic_route_city_label, &micro_style, 0);
+    lv_obj_set_style_text_align(traffic_route_city_label, LV_TEXT_ALIGN_RIGHT, 0);
+    // Bounded so a long pair of city names cannot run back into the airport
+    // codes on the left.
+    lv_obj_set_width(traffic_route_city_label, 250);
+    lv_label_set_long_mode(traffic_route_city_label, LV_LABEL_LONG_DOT);
+    lv_obj_align(traffic_route_city_label, LV_ALIGN_TOP_RIGHT, -18, 130);
+
+    static const char* METRIC_CAPTIONS[] = {"ALT ft", "SPEED kt", "RANGE nm", "TRACK"};
+    static const lv_coord_t METRIC_X[] = {18, 132, 246, 360};
+    for (int i = 0; i < 4; ++i) {
+        create_micro(traffic_overlay, METRIC_CAPTIONS[i], METRIC_X[i], 156);
+        traffic_metric_labels[i] = lv_label_create(traffic_overlay);
+        lv_label_set_text(traffic_metric_labels[i], "--");
+        lv_obj_add_style(traffic_metric_labels[i], &compact_value_style, 0);
+        lv_obj_set_pos(traffic_metric_labels[i], METRIC_X[i], 176);
+    }
+
+    create_rule(traffic_overlay, 18, 214, 444, COLOR_RULE);
+    create_micro(traffic_overlay, "ALSO IN RANGE", 18, 224);
+
+    for (int row = 0; row < TRAFFIC_LIST_ROWS; ++row) {
+        const lv_coord_t y = 250 + (row * 38);
+
+        traffic_row_callsign[row] = lv_label_create(traffic_overlay);
+        lv_label_set_text(traffic_row_callsign[row], "");
+        lv_obj_add_style(traffic_row_callsign[row], &compact_value_style, 0);
+        lv_obj_set_pos(traffic_row_callsign[row], 18, y);
+
+        traffic_row_airline[row] = lv_label_create(traffic_overlay);
+        lv_label_set_text(traffic_row_airline[row], "");
+        lv_obj_add_style(traffic_row_airline[row], &micro_style, 0);
+        lv_obj_set_style_text_color(traffic_row_airline[row], lv_color_hex(COLOR_MUTED), 0);
+        lv_obj_set_width(traffic_row_airline[row], 160);
+        lv_label_set_long_mode(traffic_row_airline[row], LV_LABEL_LONG_DOT);
+        lv_obj_set_pos(traffic_row_airline[row], 150, y + 5);
+
+        traffic_row_detail[row] = lv_label_create(traffic_overlay);
+        lv_label_set_text(traffic_row_detail[row], "");
+        lv_obj_add_style(traffic_row_detail[row], &micro_style, 0);
+        lv_obj_set_style_text_align(traffic_row_detail[row], LV_TEXT_ALIGN_RIGHT, 0);
+        lv_obj_align(traffic_row_detail[row], LV_ALIGN_TOP_RIGHT, -18, y + 5);
+    }
+
+    create_rule(traffic_overlay, 18, 424, 444, COLOR_RULE);
+
+    traffic_footer_label = lv_label_create(traffic_overlay);
+    lv_label_set_text(traffic_footer_label, "");
+    lv_obj_add_style(traffic_footer_label, &micro_style, 0);
+    lv_obj_set_pos(traffic_footer_label, 18, 438);
+}
+
 static void ensure_portal_page_overlay() {
     if (portal_page_overlay != nullptr) {
         return;
@@ -980,7 +1113,11 @@ void ui_init() {
     lv_label_set_text(moon_phase_label, "NEW MOON");
     lv_obj_add_style(moon_phase_label, &micro_style, 0);
     lv_obj_set_style_text_color(moon_phase_label, lv_color_hex(COLOR_MUTED), 0);
-    lv_obj_set_width(moon_phase_label, 82);
+    // A size down from the other micro labels so the longest phase names
+    // ("WAXING CRESCENT") always break into two lines rather than three.
+    lv_obj_set_style_text_font(moon_phase_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_letter_space(moon_phase_label, 0, 0);
+    lv_obj_set_width(moon_phase_label, 88);
     lv_label_set_long_mode(moon_phase_label, LV_LABEL_LONG_WRAP);
     lv_obj_set_pos(moon_phase_label, 256, 434);
 
@@ -1125,12 +1262,18 @@ void ui_update_page(const char* title, uint8_t page_index, uint8_t page_count) {
         set_tag_text(station_tag, title_buffer);
     }
 
+    uint8_t safeCount = page_count == 0 ? 1 : page_count;
+    uint8_t safeIndex = page_index >= safeCount ? 0 : page_index;
+    snprintf(
+        traffic_page_text,
+        sizeof(traffic_page_text),
+        "%u/%u",
+        static_cast<unsigned>(safeIndex + 1),
+        static_cast<unsigned>(safeCount)
+    );
+
     if (page_indicator_label != nullptr) {
-        char buffer[16];
-        uint8_t safeCount = page_count == 0 ? 1 : page_count;
-        uint8_t safeIndex = page_index >= safeCount ? 0 : page_index;
-        snprintf(buffer, sizeof(buffer), "%u/%u", static_cast<unsigned>(safeIndex + 1), static_cast<unsigned>(safeCount));
-        lv_label_set_text(page_indicator_label, buffer);
+        lv_label_set_text(page_indicator_label, traffic_page_text);
     }
 
     request_full_redraw();
@@ -1147,6 +1290,186 @@ void ui_show_portal_page(const char* ssid, const char* url) {
     const char* qrPayload = (url == nullptr || strlen(url) == 0) ? "http://-" : url;
     lv_qrcode_update(portal_page_qr, qrPayload, strlen(qrPayload));
 
+    request_full_redraw();
+}
+
+static void format_thousands(float value, char* out, size_t size) {
+    const long rounded = lroundf(value);
+    if (labs(rounded) < 1000) {
+        snprintf(out, size, "%ld", rounded);
+        return;
+    }
+    snprintf(out, size, "%ld,%03ld", rounded / 1000, labs(rounded % 1000));
+}
+
+void ui_show_traffic_page(const TrafficData& data, const AirlineLogo* logo, const RouteInfo* route) {
+    ensure_traffic_overlay();
+    lv_obj_clear_flag(traffic_overlay, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(traffic_overlay);
+
+    lv_label_set_text(traffic_page_indicator, traffic_page_text);
+
+    char buffer[48];
+    snprintf(buffer, sizeof(buffer), "%u NM", static_cast<unsigned>(data.radiusNm));
+    lv_label_set_text(traffic_range_label, buffer);
+
+    if (!data.isValid || data.count == 0) {
+        lv_label_set_text(traffic_callsign_label, data.isValid ? "NO CONTACTS" : "NO DATA");
+        lv_label_set_text(traffic_airline_label, "");
+        lv_label_set_text(traffic_aircraft_label, "");
+        lv_label_set_text(traffic_route_label, "");
+        lv_label_set_text(traffic_route_city_label, "");
+        lv_obj_add_flag(traffic_logo_image, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(traffic_operator_tag.box, LV_OBJ_FLAG_HIDDEN);
+        for (int i = 0; i < 4; ++i) {
+            lv_label_set_text(traffic_metric_labels[i], "--");
+        }
+        for (int row = 0; row < TRAFFIC_LIST_ROWS; ++row) {
+            lv_label_set_text(traffic_row_callsign[row], "");
+            lv_label_set_text(traffic_row_airline[row], "");
+            lv_label_set_text(traffic_row_detail[row], "");
+        }
+        lv_label_set_text(
+            traffic_footer_label,
+            data.isValid ? "NOTHING IN RANGE" : "TRAFFIC UNAVAILABLE"
+        );
+        request_full_redraw();
+        return;
+    }
+
+    const AircraftInfo& lead = data.aircraft[0];
+    lv_label_set_text(traffic_callsign_label, lead.callsign);
+
+    if (lead.airlineName != nullptr) {
+        char name[40];
+        to_upper_copy(lead.airlineName, name, sizeof(name), 0);
+        lv_label_set_text(traffic_airline_label, name);
+    } else if (lead.operatorIcao[0] != '\0') {
+        lv_label_set_text(traffic_airline_label, lead.operatorIcao);
+    } else {
+        lv_label_set_text(traffic_airline_label, "GENERAL AVIATION");
+    }
+
+    if (lead.registration[0] != '\0' && lead.type[0] != '\0') {
+        snprintf(buffer, sizeof(buffer), "%s - %s", lead.registration, lead.type);
+    } else if (lead.type[0] != '\0') {
+        snprintf(buffer, sizeof(buffer), "%s", lead.type);
+    } else {
+        snprintf(buffer, sizeof(buffer), "%s", lead.registration);
+    }
+    lv_label_set_text(traffic_aircraft_label, buffer);
+
+    if (route != nullptr && route->isValid) {
+        char cities[64];
+        snprintf(buffer, sizeof(buffer), "%s  " LV_SYMBOL_RIGHT "  %s", route->fromCode, route->toCode);
+        lv_label_set_text(traffic_route_label, buffer);
+        to_upper_copy(route->fromCity, cities, sizeof(cities), 0);
+        const size_t used = strlen(cities);
+        snprintf(cities + used, sizeof(cities) - used, " - ");
+        char destination[24];
+        to_upper_copy(route->toCity, destination, sizeof(destination), 0);
+        strncat(cities, destination, sizeof(cities) - strlen(cities) - 1);
+        lv_label_set_text(traffic_route_city_label, cities);
+    } else {
+        lv_label_set_text(traffic_route_label, "ROUTE UNKNOWN");
+        lv_label_set_text(traffic_route_city_label, "");
+    }
+
+    // Logo when we have one, otherwise fall back to the operator code.
+    if (logo != nullptr && logo->isValid && logo->png != nullptr) {
+        // RAW hands the encoded PNG to LVGL's decoder. The cache is keyed on the
+        // descriptor, so drop the old entry or a previous airline's logo is
+        // redrawn from stale pixels.
+        lv_image_cache_drop(&traffic_logo_dsc);
+
+        traffic_logo_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+        traffic_logo_dsc.header.cf = LV_COLOR_FORMAT_RAW;
+        traffic_logo_dsc.header.flags = 0;
+        traffic_logo_dsc.header.w = logo->width;
+        traffic_logo_dsc.header.h = logo->height;
+        traffic_logo_dsc.header.stride = 0;
+        traffic_logo_dsc.data = logo->png;
+        traffic_logo_dsc.data_size = logo->pngSize;
+
+        lv_image_set_src(traffic_logo_image, &traffic_logo_dsc);
+        lv_obj_clear_flag(traffic_logo_image, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(traffic_operator_tag.box, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(traffic_logo_image, LV_OBJ_FLAG_HIDDEN);
+        if (lead.operatorIcao[0] != '\0') {
+            set_tag_text(traffic_operator_tag, lead.operatorIcao);
+            lv_obj_clear_flag(traffic_operator_tag.box, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(traffic_operator_tag.box, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
+
+    if (lead.onGround) {
+        lv_label_set_text(traffic_metric_labels[0], "GND");
+    } else {
+        format_thousands(lead.altitudeFt, buffer, sizeof(buffer));
+        lv_label_set_text(traffic_metric_labels[0], buffer);
+    }
+
+    snprintf(buffer, sizeof(buffer), "%.0f", lead.groundSpeedKt);
+    lv_label_set_text(traffic_metric_labels[1], buffer);
+
+    snprintf(buffer, sizeof(buffer), "%.1f", lead.distanceNm);
+    lv_label_set_text(traffic_metric_labels[2], buffer);
+
+    snprintf(buffer, sizeof(buffer), "%.0f\xC2\xB0", lead.trackDeg);
+    lv_label_set_text(traffic_metric_labels[3], buffer);
+
+    for (int row = 0; row < TRAFFIC_LIST_ROWS; ++row) {
+        const uint8_t index = static_cast<uint8_t>(row + 1);
+        if (index >= data.count) {
+            lv_label_set_text(traffic_row_callsign[row], "");
+            lv_label_set_text(traffic_row_airline[row], "");
+            lv_label_set_text(traffic_row_detail[row], "");
+            continue;
+        }
+
+        const AircraftInfo& other = data.aircraft[index];
+        lv_label_set_text(traffic_row_callsign[row], other.callsign);
+
+        if (other.airlineName != nullptr) {
+            char name[40];
+            to_upper_copy(other.airlineName, name, sizeof(name), 0);
+            lv_label_set_text(traffic_row_airline[row], name);
+        } else {
+            lv_label_set_text(traffic_row_airline[row], other.operatorIcao[0] != '\0' ? other.operatorIcao : "-");
+        }
+
+        char altitude[16];
+        if (other.onGround) {
+            snprintf(altitude, sizeof(altitude), "GND");
+        } else {
+            format_thousands(other.altitudeFt, altitude, sizeof(altitude));
+        }
+        snprintf(buffer, sizeof(buffer), "%s ft   %.1f nm", altitude, other.distanceNm);
+        lv_label_set_text(traffic_row_detail[row], buffer);
+        lv_obj_align(traffic_row_detail[row], LV_ALIGN_TOP_RIGHT, -18, 255 + (row * 38));
+    }
+
+    snprintf(
+        buffer,
+        sizeof(buffer),
+        "%u AIRBORNE WITHIN %u NM",
+        static_cast<unsigned>(data.totalInRange),
+        static_cast<unsigned>(data.radiusNm)
+    );
+    lv_label_set_text(traffic_footer_label, buffer);
+
+    request_full_redraw();
+}
+
+void ui_hide_traffic_page() {
+    if (traffic_overlay == nullptr) {
+        return;
+    }
+
+    lv_obj_add_flag(traffic_overlay, LV_OBJ_FLAG_HIDDEN);
     request_full_redraw();
 }
 

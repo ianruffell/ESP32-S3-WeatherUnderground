@@ -94,6 +94,12 @@ public:
             pendingSettings.proWeatherLiveToken = proWeatherLiveToken;
         }
 
+        pendingSettings.trafficEnabled = server.arg("traffic_on") != "0";
+        const int requestedRadius = server.arg("traffic_nm").toInt();
+        if (requestedRadius > 0) {
+            pendingSettings.trafficRadiusNm = static_cast<uint16_t>(requestedRadius);
+        }
+
         int requestedPageCount = server.arg("page_count").toInt();
         if (requestedPageCount < 1) {
             requestedPageCount = 1;
@@ -186,6 +192,16 @@ public:
         html += field("Weather Underground API key", "api_key", currentSettings.weatherApiKey, true);
         html += field("ProWeatherLive access token", "pwl_token", "", true);
         html += F("</div><p>A blank ProWeatherLive token keeps the currently saved token. Obtain it while logged in to ProWeatherLive; never use the station upload key here.</p></section>");
+
+        html += F("<section class='card'><h2>Air Traffic</h2><p>Shows aircraft near the first location page. Uses the free adsb.lol feed; airline logos are fetched on demand.</p><div class='row'><div><label for='traffic_on'>Traffic page</label><select id='traffic_on' name='traffic_on'>");
+        html += F("<option value='1'");
+        html += currentSettings.trafficEnabled ? F(" selected") : F("");
+        html += F(">Enabled</option><option value='0'");
+        html += currentSettings.trafficEnabled ? F("") : F(" selected");
+        html += F(">Disabled</option></select></div>");
+        html += F("<div><label for='traffic_nm'>Radius (nautical miles)</label><input id='traffic_nm' name='traffic_nm' type='number' min='2' max='150' value='");
+        html += String(currentSettings.trafficRadiusNm);
+        html += F("'></div></div></section>");
 
         html += F("<section class='card'><div class='location-head'><div><h2>Location Pages</h2><p>Add the stations you want to swipe between on the display. Timezone and coordinates are filled automatically after the station is fetched.</p></div>");
         html += F("<button type='button' class='secondary' id='add-location'>Add Location</button></div>");

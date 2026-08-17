@@ -70,6 +70,12 @@ void DeviceSettings::sanitizeWeatherPages() {
         weatherProvider = "wunderground";
     }
 
+    if (trafficRadiusNm < TRAFFIC_MIN_RADIUS_NM) {
+        trafficRadiusNm = TRAFFIC_MIN_RADIUS_NM;
+    } else if (trafficRadiusNm > TRAFFIC_MAX_RADIUS_NM) {
+        trafficRadiusNm = TRAFFIC_MAX_RADIUS_NM;
+    }
+
     WeatherPageSettings compact[MAX_WEATHER_PAGES];
     uint8_t compactCount = 0;
 
@@ -121,8 +127,10 @@ void SettingsStore::begin() {
 bool SettingsStore::load(DeviceSettings& settings) {
     settings = defaults();
 
+    // Older layouts stay loadable: fields added since then fall back to their
+    // defaults, so a version bump must not discard a configured device.
     uint32_t version = preferences.getUInt("version", 0);
-    if (version != 2 && version != SETTINGS_VERSION) {
+    if (version < 2 || version > SETTINGS_VERSION) {
         return false;
     }
 
@@ -133,6 +141,8 @@ bool SettingsStore::load(DeviceSettings& settings) {
     settings.weatherApiKey = readString("api_key", settings.weatherApiKey);
     settings.proWeatherLiveToken = readString("pwl_token", settings.proWeatherLiveToken);
     settings.weatherPageCount = preferences.getUChar("page_count", settings.weatherPageCount);
+    settings.trafficRadiusNm = preferences.getUShort("traffic_nm", settings.trafficRadiusNm);
+    settings.trafficEnabled = preferences.getBool("traffic_on", settings.trafficEnabled);
     settings.timeZone = readString("time_zone", settings.timeZone);
     settings.ntpServer1 = readString("ntp_1", settings.ntpServer1);
     settings.ntpServer2 = readString("ntp_2", settings.ntpServer2);
@@ -180,6 +190,8 @@ bool SettingsStore::save(const DeviceSettings& settings) {
     ok &= preferences.putString("api_key", normalized.weatherApiKey) >= 0;
     ok &= preferences.putString("pwl_token", normalized.proWeatherLiveToken) >= 0;
     ok &= preferences.putUChar("page_count", normalized.weatherPageCount) > 0;
+    ok &= preferences.putUShort("traffic_nm", normalized.trafficRadiusNm) > 0;
+    ok &= preferences.putBool("traffic_on", normalized.trafficEnabled) >= 0;
     ok &= preferences.putString("time_zone", normalized.timeZone) >= 0;
     ok &= preferences.putString("ntp_1", normalized.ntpServer1) >= 0;
     ok &= preferences.putString("ntp_2", normalized.ntpServer2) >= 0;
@@ -240,6 +252,8 @@ DeviceSettings SettingsStore::defaults() {
     settings.wifiSsid = WIFI_SSID;
     settings.wifiPassword = WIFI_PASSWORD;
     settings.weatherProvider = "wunderground";
+    settings.trafficRadiusNm = TRAFFIC_DEFAULT_RADIUS_NM;
+    settings.trafficEnabled = true;
     settings.weatherApiKey = WEATHER_API_KEY;
     settings.proWeatherLiveToken = "";
     settings.weatherPageCount = 1;

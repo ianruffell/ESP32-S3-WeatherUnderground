@@ -27,6 +27,8 @@ struct DeviceSettings {
     String ntpServer2;
     float locationLat;
     float locationLon;
+    uint16_t trafficRadiusNm;
+    bool trafficEnabled;
 
     bool hasWiFiCredentials() const;
     bool hasWeatherCredentials() const;
