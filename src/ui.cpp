@@ -36,7 +36,14 @@ static lv_obj_t* sunrise_value_label;
 static lv_obj_t* sunset_value_label;
 static lv_obj_t* moon_phase_label;
 static lv_obj_t* moon_canvas;
-static lv_obj_t* time_label;
+// The clock is drawn one character per fixed-width slot. Montserrat's digits
+// are proportional ('1' is roughly half the width of '4'), so drawing the time
+// as a single string makes it shuffle sideways every second.
+static constexpr int TIME_SLOT_COUNT = 8;
+static constexpr lv_coord_t TIME_DIGIT_WIDTH = 14;
+static constexpr lv_coord_t TIME_COLON_WIDTH = 6;
+static constexpr lv_coord_t TIME_RIGHT_EDGE = 310;
+static lv_obj_t* time_slots[TIME_SLOT_COUNT];
 static lv_obj_t* date_label;
 static lv_obj_t* refresh_label;
 static lv_obj_t* wifi_status_label;
@@ -1035,10 +1042,20 @@ void ui_init() {
     lv_obj_add_style(wind_label, &metric_value_style, 0);
     lv_obj_set_pos(wind_label, 18, 176);
 
-    time_label = lv_label_create(screen_bg);
-    lv_label_set_text(time_label, "--:--:--");
-    lv_obj_add_style(time_label, &time_style, 0);
-    lv_obj_align(time_label, LV_ALIGN_TOP_RIGHT, -170, 62);
+    lv_coord_t slot_x = TIME_RIGHT_EDGE - ((6 * TIME_DIGIT_WIDTH) + (2 * TIME_COLON_WIDTH));
+    for (int i = 0; i < TIME_SLOT_COUNT; ++i) {
+        const bool is_colon = (i == 2) || (i == 5);
+        const lv_coord_t slot_w = is_colon ? TIME_COLON_WIDTH : TIME_DIGIT_WIDTH;
+
+        time_slots[i] = lv_label_create(screen_bg);
+        lv_label_set_text(time_slots[i], is_colon ? ":" : "-");
+        lv_obj_add_style(time_slots[i], &time_style, 0);
+        lv_obj_set_style_text_align(time_slots[i], LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_width(time_slots[i], slot_w);
+        lv_obj_set_pos(time_slots[i], slot_x, 62);
+
+        slot_x += slot_w;
+    }
 
     date_label = lv_label_create(screen_bg);
     lv_label_set_text(date_label, "-- --- ----");
@@ -1198,19 +1215,41 @@ void ui_update_astronomy(const char* sunrise, const char* sunset, float moon_pha
     request_full_redraw();
 }
 
+// Spreads "HH:MM:SS" across the fixed-width slots, one character each.
+static void set_time_text(const char* text) {
+    if (text == nullptr) {
+        return;
+    }
+
+    const size_t length = strlen(text);
+    for (int i = 0; i < TIME_SLOT_COUNT; ++i) {
+        if (time_slots[i] == nullptr) {
+            continue;
+        }
+
+        const char character[2] = {
+            static_cast<size_t>(i) < length ? text[i] : ' ',
+            '\0'
+        };
+        if (strcmp(lv_label_get_text(time_slots[i]), character) != 0) {
+            lv_label_set_text(time_slots[i], character);
+        }
+    }
+}
+
 void ui_update_clock(const char* time_text, const char* date_text, unsigned long seconds_until_refresh, bool has_refresh_schedule) {
-    if (time_label == nullptr || date_label == nullptr || refresh_label == nullptr) {
+    if (time_slots[0] == nullptr || date_label == nullptr || refresh_label == nullptr) {
         return;
     }
 
     if (time_text == nullptr || date_text == nullptr) {
-        lv_label_set_text(time_label, "--:--:--");
+        set_time_text("--:--:--");
         lv_label_set_text(date_label, "-- --- ----");
         lv_label_set_text(refresh_label, "REFRESH --:--");
         return;
     }
 
-    lv_label_set_text(time_label, time_text);
+    set_time_text(time_text);
 
     char date_buffer[24];
     to_upper_copy(date_text, date_buffer, sizeof(date_buffer), 0);
