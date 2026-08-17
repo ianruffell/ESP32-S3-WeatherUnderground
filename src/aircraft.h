@@ -26,6 +26,7 @@ struct TrafficData {
     uint8_t count;        // entries populated in `aircraft`
     uint16_t totalInRange; // everything the API reported inside the radius
     uint16_t radiusNm;
+    uint16_t ageSeconds;   // how long ago this data was actually fetched
     bool isValid;
 };
 

@@ -164,10 +164,10 @@ static void insert_by_distance(TrafficData& data, const AircraftInfo& candidate)
 }
 
 bool AircraftAPI::fetchTraffic(double latitude, double longitude, uint16_t radiusNm, TrafficData& data) {
-    data.count = 0;
-    data.totalInRange = 0;
-    data.radiusNm = radiusNm;
-    data.isValid = false;
+    // Built up separately and only committed on success: the feed times out
+    // occasionally, and a failed fetch must not discard the last good list.
+    TrafficData staging = {};
+    staging.radiusNm = radiusNm;
 
     if (WiFi.status() != WL_CONNECTED) {
         return false;
@@ -195,6 +195,10 @@ bool AircraftAPI::fetchTraffic(double latitude, double longitude, uint16_t radiu
 
     const int status = http.GET();
     if (status != HTTP_CODE_OK) {
+        log_i("[traffic] GET failed status=%d heap=%u psram=%u",
+              status,
+              static_cast<unsigned>(ESP.getFreeHeap()),
+              static_cast<unsigned>(ESP.getFreePsram()));
         http.end();
         return false;
     }
@@ -219,6 +223,9 @@ bool AircraftAPI::fetchTraffic(double latitude, double longitude, uint16_t radiu
     http.end();
 
     if (error) {
+        log_i("[traffic] parse failed: %s heap=%u",
+              error.c_str(),
+              static_cast<unsigned>(ESP.getFreeHeap()));
         return false;
     }
 
@@ -262,28 +269,29 @@ bool AircraftAPI::fetchTraffic(double latitude, double longitude, uint16_t radiu
             }
         }
 
-        insert_by_distance(data, info);
+        insert_by_distance(staging, info);
     }
 
     // The featured slot is the nearest flight we can name, so the page shows an
     // airline and its logo whenever one is in range. The nearest aircraft
     // overall still appears, just in the list below. Falls back to plain
     // distance order when nothing in range is identifiable.
-    for (uint8_t i = 1; i < data.count; ++i) {
-        if (data.aircraft[i].airlineIata != nullptr) {
-            if (data.aircraft[0].airlineIata == nullptr) {
-                const AircraftInfo featured = data.aircraft[i];
+    for (uint8_t i = 1; i < staging.count; ++i) {
+        if (staging.aircraft[i].airlineIata != nullptr) {
+            if (staging.aircraft[0].airlineIata == nullptr) {
+                const AircraftInfo featured = staging.aircraft[i];
                 for (uint8_t j = i; j > 0; --j) {
-                    data.aircraft[j] = data.aircraft[j - 1];
+                    staging.aircraft[j] = staging.aircraft[j - 1];
                 }
-                data.aircraft[0] = featured;
+                staging.aircraft[0] = featured;
             }
             break;
         }
     }
 
-    data.totalInRange = airborne;
-    data.isValid = true;
+    staging.totalInRange = airborne;
+    staging.isValid = true;
+    data = staging;
     return true;
 }
 

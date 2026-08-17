@@ -1491,13 +1491,26 @@ void ui_show_traffic_page(const TrafficData& data, const AirlineLogo* logo, cons
         lv_obj_align(traffic_row_detail[row], LV_ALIGN_TOP_RIGHT, -18, 255 + (row * 38));
     }
 
-    snprintf(
-        buffer,
-        sizeof(buffer),
-        "%u AIRBORNE WITHIN %u NM",
-        static_cast<unsigned>(data.totalInRange),
-        static_cast<unsigned>(data.radiusNm)
-    );
+    // The feed times out now and then; rather than blanking the page, say how
+    // stale the list is once it is more than a refresh interval old.
+    if (data.ageSeconds > 60) {
+        snprintf(
+            buffer,
+            sizeof(buffer),
+            "%u AIRBORNE WITHIN %u NM - %um AGO",
+            static_cast<unsigned>(data.totalInRange),
+            static_cast<unsigned>(data.radiusNm),
+            static_cast<unsigned>(data.ageSeconds / 60)
+        );
+    } else {
+        snprintf(
+            buffer,
+            sizeof(buffer),
+            "%u AIRBORNE WITHIN %u NM",
+            static_cast<unsigned>(data.totalInRange),
+            static_cast<unsigned>(data.radiusNm)
+        );
+    }
     lv_label_set_text(traffic_footer_label, buffer);
 
     request_full_redraw();

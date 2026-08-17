@@ -45,6 +45,7 @@ int16_t swipeStartX = 0;
 int16_t swipeStartY = 0;
 uint8_t activeWeatherPageIndex = 0;
 unsigned long lastTrafficFetch = 0;
+unsigned long lastTrafficSuccess = 0;
 unsigned long lastPageAdvance = 0;
 AircraftAPI aircraftApi;
 TrafficData trafficData;
@@ -216,8 +217,11 @@ static void refreshTrafficData(bool force) {
     // Stamped even on failure so a broken feed is not polled every loop.
     lastTrafficFetch = now;
     if (!aircraftApi.fetchTraffic(latitude, longitude, deviceSettings.trafficRadiusNm, trafficData)) {
+        // The list is left intact; the page shows how old it is instead.
         return;
     }
+
+    lastTrafficSuccess = now;
 
     airlineLogoValid = false;
     aircraftRouteValid = false;
@@ -239,6 +243,9 @@ static void showTrafficPage() {
     ui_hide_portal_page();
     ui_update_page("Air Traffic", trafficPageIndex(), totalDisplayPageCount());
     refreshTrafficData(false);
+    trafficData.ageSeconds = lastTrafficSuccess == 0
+        ? 0
+        : static_cast<uint16_t>((millis() - lastTrafficSuccess) / 1000);
     ui_show_traffic_page(
                     trafficData,
                     airlineLogoValid ? &airlineLogo : nullptr,
@@ -840,6 +847,9 @@ void loop() {
                 showActiveWeatherPage(false);
             } else if ((millis() - lastTrafficFetch) >= TRAFFIC_UPDATE_INTERVAL_MS) {
                 refreshTrafficData(true);
+                trafficData.ageSeconds = lastTrafficSuccess == 0
+                    ? 0
+                    : static_cast<uint16_t>((millis() - lastTrafficSuccess) / 1000);
                 ui_show_traffic_page(
                     trafficData,
                     airlineLogoValid ? &airlineLogo : nullptr,
