@@ -44,15 +44,10 @@ uint8_t consecutiveWeatherFailures = 0;
 int16_t swipeStartX = 0;
 int16_t swipeStartY = 0;
 uint8_t activeWeatherPageIndex = 0;
-unsigned long lastTrafficFetch = 0;
 unsigned long lastTrafficSuccess = 0;
+unsigned long lastTrafficRender = 0;
 unsigned long lastPageAdvance = 0;
 AircraftAPI aircraftApi;
-TrafficData trafficData;
-AirlineLogo airlineLogo;
-bool airlineLogoValid = false;
-RouteInfo aircraftRoute;
-bool aircraftRouteValid = false;
 String setupApSsid;
 
 static bool hasCompletedSetup(const DeviceSettings& settings) {
@@ -200,37 +195,142 @@ static void primaryStationLocation(double& latitude, double& longitude) {
     longitude = LOCATION_LON;
 }
 
-static void refreshTrafficData(bool force) {
-    if (!trafficPageAvailable()) {
-        return;
-    }
+// Traffic is fetched on a second core into a back buffer and swapped in by the
+// UI, so paging to the traffic screen never waits on the network. Fetching it
+// inline cost 0.7s on a good day and 2.2s when the featured aircraft changed and
+// its logo and route had to be looked up too.
+struct TrafficSnapshot {
+    TrafficData data;
+    RouteInfo route;
+    bool routeValid;
+    uint8_t* logoPng;
+    size_t logoSize;
+    uint16_t logoWidth;
+    uint16_t logoHeight;
+    bool logoValid;
+    unsigned long fetchedAt;
+};
 
-    const unsigned long now = millis();
-    if (!force && trafficData.isValid && (now - lastTrafficFetch) < TRAFFIC_UPDATE_INTERVAL_MS) {
-        return;
-    }
+static TrafficSnapshot trafficFront = {};  // owned by the UI
+static TrafficSnapshot trafficBack = {};   // owned by the fetch task
+static SemaphoreHandle_t trafficMutex = nullptr;
+static volatile bool trafficPending = false;
+static double trafficLatitude = 0.0;
+static double trafficLongitude = 0.0;
+static uint16_t trafficRadiusNm = TRAFFIC_DEFAULT_RADIUS_NM;
 
+// Publishes the coordinates the task should use, rather than having it read
+// settings that the main loop may be updating.
+static void publishTrafficParameters() {
     double latitude = 0.0;
     double longitude = 0.0;
     primaryStationLocation(latitude, longitude);
 
-    // Stamped even on failure so a broken feed is not polled every loop.
-    lastTrafficFetch = now;
-    if (!aircraftApi.fetchTraffic(latitude, longitude, deviceSettings.trafficRadiusNm, trafficData)) {
-        // The list is left intact; the page shows how old it is instead.
-        return;
-    }
+    xSemaphoreTake(trafficMutex, portMAX_DELAY);
+    trafficLatitude = latitude;
+    trafficLongitude = longitude;
+    trafficRadiusNm = deviceSettings.trafficRadiusNm;
+    xSemaphoreGive(trafficMutex);
+}
 
-    lastTrafficSuccess = now;
+static void trafficFetchTask(void* parameter) {
+    LV_UNUSED(parameter);
 
-    airlineLogoValid = false;
-    aircraftRouteValid = false;
-    if (trafficData.count > 0) {
-        if (trafficData.aircraft[0].airlineIata != nullptr) {
-            airlineLogoValid = aircraftApi.fetchAirlineLogo(trafficData.aircraft[0].airlineIata, airlineLogo);
+    for (;;) {
+        if (deviceSettings.trafficEnabled && WiFi.status() == WL_CONNECTED) {
+            xSemaphoreTake(trafficMutex, portMAX_DELAY);
+            const double latitude = trafficLatitude;
+            const double longitude = trafficLongitude;
+            const uint16_t radius = trafficRadiusNm;
+            xSemaphoreGive(trafficMutex);
+
+            TrafficData data = {};
+            if (aircraftApi.fetchTraffic(latitude, longitude, radius, data)) {
+                RouteInfo route = {};
+                AirlineLogo logo = {};
+                bool routeValid = false;
+                bool logoValid = false;
+
+                if (data.count > 0) {
+                    if (data.aircraft[0].airlineIata != nullptr) {
+                        logoValid = aircraftApi.fetchAirlineLogo(data.aircraft[0].airlineIata, logo);
+                    }
+                    routeValid = aircraftApi.fetchRoute(data.aircraft[0].callsign, route);
+                }
+
+                // The back buffer keeps its own copy of the logo: the API's cache
+                // frees its buffer on the next airline change, which the UI may
+                // still be drawing from.
+                if (trafficBack.logoPng != nullptr) {
+                    free(trafficBack.logoPng);
+                    trafficBack.logoPng = nullptr;
+                }
+                trafficBack.logoValid = false;
+                if (logoValid && logo.png != nullptr && logo.pngSize > 0) {
+                    uint8_t* copy = static_cast<uint8_t*>(heap_caps_malloc(logo.pngSize, MALLOC_CAP_SPIRAM));
+                    if (copy == nullptr) {
+                        copy = static_cast<uint8_t*>(malloc(logo.pngSize));
+                    }
+                    if (copy != nullptr) {
+                        memcpy(copy, logo.png, logo.pngSize);
+                        trafficBack.logoPng = copy;
+                        trafficBack.logoSize = logo.pngSize;
+                        trafficBack.logoWidth = logo.width;
+                        trafficBack.logoHeight = logo.height;
+                        trafficBack.logoValid = true;
+                    }
+                }
+
+                trafficBack.data = data;
+                trafficBack.route = route;
+                trafficBack.routeValid = routeValid;
+                trafficBack.fetchedAt = millis();
+
+                xSemaphoreTake(trafficMutex, portMAX_DELAY);
+                trafficPending = true;
+                xSemaphoreGive(trafficMutex);
+            }
         }
-        aircraftRouteValid = aircraftApi.fetchRoute(trafficData.aircraft[0].callsign, aircraftRoute);
+
+        vTaskDelay(pdMS_TO_TICKS(TRAFFIC_UPDATE_INTERVAL_MS));
     }
+}
+
+// Swaps a freshly fetched snapshot in. The task then owns what the UI was
+// showing and recycles it on its next publish.
+static bool consumeTrafficSnapshot() {
+    if (!trafficPending) {
+        return false;
+    }
+
+    xSemaphoreTake(trafficMutex, portMAX_DELAY);
+    const TrafficSnapshot previous = trafficFront;
+    trafficFront = trafficBack;
+    trafficBack = previous;
+    trafficPending = false;
+    xSemaphoreGive(trafficMutex);
+
+    lastTrafficSuccess = trafficFront.fetchedAt;
+    return true;
+}
+
+static void renderTrafficPage() {
+    trafficFront.data.ageSeconds = trafficFront.fetchedAt == 0
+        ? 0
+        : static_cast<uint16_t>((millis() - trafficFront.fetchedAt) / 1000);
+
+    AirlineLogo logo = {};
+    logo.png = trafficFront.logoPng;
+    logo.pngSize = trafficFront.logoSize;
+    logo.width = trafficFront.logoWidth;
+    logo.height = trafficFront.logoHeight;
+    logo.isValid = trafficFront.logoValid;
+
+    ui_show_traffic_page(
+        trafficFront.data,
+        trafficFront.logoValid ? &logo : nullptr,
+        trafficFront.routeValid ? &trafficFront.route : nullptr
+    );
 }
 
 static void showTrafficPage() {
@@ -242,15 +342,8 @@ static void showTrafficPage() {
     showingPortalQrPage = false;
     ui_hide_portal_page();
     ui_update_page("Air Traffic", trafficPageIndex(), totalDisplayPageCount());
-    refreshTrafficData(false);
-    trafficData.ageSeconds = lastTrafficSuccess == 0
-        ? 0
-        : static_cast<uint16_t>((millis() - lastTrafficSuccess) / 1000);
-    ui_show_traffic_page(
-                    trafficData,
-                    airlineLogoValid ? &airlineLogo : nullptr,
-                    aircraftRouteValid ? &aircraftRoute : nullptr
-                );
+    consumeTrafficSnapshot();
+    renderTrafficPage();
 }
 
 static void showPortalQrPage() {
@@ -738,6 +831,12 @@ void setup() {
 
     ui_init();
     ui_show_loading();
+
+    // Traffic is fetched on the core the UI does not run on, so the page never
+    // blocks on the network.
+    trafficMutex = xSemaphoreCreateMutex();
+    publishTrafficParameters();
+    xTaskCreatePinnedToCore(trafficFetchTask, "traffic", 16384, nullptr, 1, nullptr, 0);
     touchController.begin();
 
     bool wifiConnected = false;
@@ -845,21 +944,16 @@ void loop() {
                 showingTrafficPage = false;
                 ui_hide_traffic_page();
                 showActiveWeatherPage(false);
-            } else if ((millis() - lastTrafficFetch) >= TRAFFIC_UPDATE_INTERVAL_MS) {
-                refreshTrafficData(true);
-                trafficData.ageSeconds = lastTrafficSuccess == 0
-                    ? 0
-                    : static_cast<uint16_t>((millis() - lastTrafficSuccess) / 1000);
-                ui_show_traffic_page(
-                    trafficData,
-                    airlineLogoValid ? &airlineLogo : nullptr,
-                    aircraftRouteValid ? &aircraftRoute : nullptr
-                );
+            } else if (consumeTrafficSnapshot() || (millis() - lastTrafficRender) >= 1000) {
+                lastTrafficRender = millis();
+                renderTrafficPage();
             }
         }
         updateAstronomyIfNeeded();
         lastClockUpdate = millis();
     }
+
+    publishTrafficParameters();
 
     if (!setupApActive && totalDisplayPageCount() > 1 &&
         (millis() - lastPageAdvance) >= PAGE_AUTO_ADVANCE_MS) {
