@@ -255,7 +255,11 @@ static void trafficFetchTask(void* parameter) {
                     if (data.aircraft[0].airlineIata != nullptr) {
                         logoValid = aircraftApi.fetchAirlineLogo(data.aircraft[0].airlineIata, logo);
                     }
+                    // Featured aircraft first, then fill in the listed ones a
+                    // couple per cycle so a fresh list does not fire five
+                    // lookups at once. They stay cached while in range.
                     routeValid = aircraftApi.fetchRoute(data.aircraft[0].callsign, route);
+                    aircraftApi.resolveRoutes(data, 2);
                 }
 
                 // The back buffer keeps its own copy of the logo: the API's cache

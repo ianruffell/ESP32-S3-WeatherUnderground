@@ -19,6 +19,9 @@ struct AircraftInfo {
     float trackDeg;
     float verticalRateFpm;
     bool onGround;
+    char routeFrom[6];  // empty until the route is known
+    char routeTo[6];
+    bool hasRoute;
 };
 
 struct TrafficData {
@@ -64,17 +67,34 @@ public:
     // Returns false when no logo exists for that airline.
     bool fetchAirlineLogo(const char* iata, AirlineLogo& logo);
 
+    // Fills in routeFrom/routeTo for every aircraft in the list, taking them
+    // from the cache and spending at most `maxNewLookups` network lookups, so a
+    // full list does not fire five lookups at once.
+    void resolveRoutes(TrafficData& data, uint8_t maxNewLookups);
+
 private:
     // Two route sources with complementary coverage: adsbdb knows airline
     // flight numbers (BAW1379), hexdb knows radio callsigns (SHT3T).
     bool fetchRouteFromAdsbdb(const char* callsign, RouteInfo& route);
     bool fetchRouteFromHexdb(const char* callsign, RouteInfo& route);
     bool lookupAirport(const char* icao, char* code, size_t codeSize, char* city, size_t citySize);
+    bool cachedRouteFor(const char* callsign, RouteInfo& route);
+    void cacheRoute(const char* callsign, const RouteInfo& route);
+
+    // Aircraft linger in range for minutes, so caching by callsign keeps the
+    // steady-state cost near zero. An entry with isValid false records a
+    // callsign neither source knows, so it is not looked up again.
+    struct RouteCacheEntry {
+        char callsign[12];
+        RouteInfo route;
+        bool used;
+    };
+    static constexpr uint8_t ROUTE_CACHE_SIZE = 24;
+    RouteCacheEntry routeCache[ROUTE_CACHE_SIZE] = {};
+    uint8_t routeCacheNext = 0;
 
     AirlineLogo cachedLogo = {};
     char missingIata[4] = {0};     // last code known to have no logo, to avoid refetching
-    RouteInfo cachedRoute = {};    // last resolved route, keyed by callsign
-    char missingCallsign[12] = {0}; // last callsign with no route, to avoid refetching
 };
 
 #endif

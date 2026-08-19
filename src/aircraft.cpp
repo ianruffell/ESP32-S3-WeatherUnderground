@@ -560,18 +560,45 @@ bool AircraftAPI::lookupAirport(const char* icao, char* code, size_t codeSize, c
     return strlen(code) >= 3;
 }
 
+bool AircraftAPI::cachedRouteFor(const char* callsign, RouteInfo& route) {
+    for (uint8_t i = 0; i < ROUTE_CACHE_SIZE; ++i) {
+        if (routeCache[i].used && strcmp(routeCache[i].callsign, callsign) == 0) {
+            route = routeCache[i].route;
+            return true;
+        }
+    }
+    return false;
+}
+
+void AircraftAPI::cacheRoute(const char* callsign, const RouteInfo& route) {
+    for (uint8_t i = 0; i < ROUTE_CACHE_SIZE; ++i) {
+        if (routeCache[i].used && strcmp(routeCache[i].callsign, callsign) == 0) {
+            routeCache[i].route = route;
+            return;
+        }
+    }
+
+    RouteCacheEntry& slot = routeCache[routeCacheNext];
+    routeCacheNext = static_cast<uint8_t>((routeCacheNext + 1) % ROUTE_CACHE_SIZE);
+    snprintf(slot.callsign, sizeof(slot.callsign), "%s", callsign);
+    slot.route = route;
+    slot.used = true;
+}
+
 bool AircraftAPI::fetchRoute(const char* callsign, RouteInfo& route) {
     if (callsign == nullptr || strlen(callsign) < 3) {
         return false;
     }
 
-    if (cachedRoute.isValid && strcmp(cachedRoute.callsign, callsign) == 0) {
-        route = cachedRoute;
+    RouteInfo cached = {};
+    if (cachedRouteFor(callsign, cached)) {
+        // A cached entry that is not valid records a callsign neither source
+        // knows, so there is nothing to retry.
+        if (!cached.isValid) {
+            return false;
+        }
+        route = cached;
         return true;
-    }
-
-    if (strcmp(missingCallsign, callsign) == 0) {
-        return false;
     }
 
     if (WiFi.status() != WL_CONNECTED) {
@@ -580,13 +607,36 @@ bool AircraftAPI::fetchRoute(const char* callsign, RouteInfo& route) {
 
     RouteInfo resolved = {};
     if (!fetchRouteFromAdsbdb(callsign, resolved) && !fetchRouteFromHexdb(callsign, resolved)) {
-        // Neither source knows it; do not ask again for this callsign.
-        snprintf(missingCallsign, sizeof(missingCallsign), "%s", callsign);
+        RouteInfo unknown = {};
+        snprintf(unknown.callsign, sizeof(unknown.callsign), "%s", callsign);
+        cacheRoute(callsign, unknown);
         return false;
     }
 
-    cachedRoute = resolved;
-    missingCallsign[0] = '\0';
+    cacheRoute(callsign, resolved);
     route = resolved;
     return true;
+}
+
+void AircraftAPI::resolveRoutes(TrafficData& data, uint8_t maxNewLookups) {
+    uint8_t spent = 0;
+
+    for (uint8_t i = 0; i < data.count; ++i) {
+        AircraftInfo& aircraft = data.aircraft[i];
+        aircraft.hasRoute = false;
+
+        RouteInfo route = {};
+        bool known = cachedRouteFor(aircraft.callsign, route);
+        if (!known && spent < maxNewLookups) {
+            // Counts the attempt, not the hit: a miss costs requests too.
+            ++spent;
+            known = fetchRoute(aircraft.callsign, route);
+        }
+
+        if (known && route.isValid) {
+            snprintf(aircraft.routeFrom, sizeof(aircraft.routeFrom), "%s", route.fromCode);
+            snprintf(aircraft.routeTo, sizeof(aircraft.routeTo), "%s", route.toCode);
+            aircraft.hasRoute = aircraft.routeFrom[0] != '\0' && aircraft.routeTo[0] != '\0';
+        }
+    }
 }

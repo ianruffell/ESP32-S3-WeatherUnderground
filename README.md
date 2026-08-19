@@ -98,7 +98,9 @@ needed. It is polled only while the page is on screen, roughly every 20 seconds.
 
 The featured aircraft is the nearest flight whose operator can be identified, so
 an airline and logo are shown whenever one is in range; the nearest aircraft
-overall still appears in the list below it. Ground vehicles and parked aircraft
+overall still appears in the list below it, which shows each flight's route,
+altitude, speed and track. Routes are cached by callsign and filled in a couple
+per refresh, so a row that has just come into range may briefly show "-". Ground vehicles and parked aircraft
 are filtered out. Aircraft whose operator is not in `src/airlines.h` show their
 ICAO callsign prefix instead of a name, and no logo.
 

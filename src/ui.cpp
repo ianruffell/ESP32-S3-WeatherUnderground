@@ -62,7 +62,9 @@ static lv_obj_t* traffic_route_city_label;
 static lv_obj_t* traffic_metric_labels[4];
 static lv_obj_t* traffic_row_callsign[TRAFFIC_LIST_ROWS];
 static lv_obj_t* traffic_row_airline[TRAFFIC_LIST_ROWS];
-static lv_obj_t* traffic_row_detail[TRAFFIC_LIST_ROWS];
+static lv_obj_t* traffic_row_alt[TRAFFIC_LIST_ROWS];
+static lv_obj_t* traffic_row_speed[TRAFFIC_LIST_ROWS];
+static lv_obj_t* traffic_row_track[TRAFFIC_LIST_ROWS];
 static lv_obj_t* traffic_footer_label;
 static lv_image_dsc_t traffic_logo_dsc;
 static char traffic_page_text[16];
@@ -797,15 +799,21 @@ static void ensure_traffic_overlay() {
         lv_label_set_text(traffic_row_airline[row], "");
         lv_obj_add_style(traffic_row_airline[row], &micro_style, 0);
         lv_obj_set_style_text_color(traffic_row_airline[row], lv_color_hex(COLOR_MUTED), 0);
-        lv_obj_set_width(traffic_row_airline[row], 160);
+        lv_obj_set_width(traffic_row_airline[row], 92);
         lv_label_set_long_mode(traffic_row_airline[row], LV_LABEL_LONG_DOT);
         lv_obj_set_pos(traffic_row_airline[row], 150, y + 5);
 
-        traffic_row_detail[row] = lv_label_create(traffic_overlay);
-        lv_label_set_text(traffic_row_detail[row], "");
-        lv_obj_add_style(traffic_row_detail[row], &micro_style, 0);
-        lv_obj_set_style_text_align(traffic_row_detail[row], LV_TEXT_ALIGN_RIGHT, 0);
-        lv_obj_align(traffic_row_detail[row], LV_ALIGN_TOP_RIGHT, -18, y + 5);
+        // Right-aligned columns rather than one string, so altitude, speed and
+        // track line up down the list.
+        lv_obj_t** columns[] = {&traffic_row_alt[row], &traffic_row_speed[row], &traffic_row_track[row]};
+        static const lv_coord_t COLUMN_RIGHT[] = {-132, -72, -18};
+        for (int column = 0; column < 3; ++column) {
+            *columns[column] = lv_label_create(traffic_overlay);
+            lv_label_set_text(*columns[column], "");
+            lv_obj_add_style(*columns[column], &micro_style, 0);
+            lv_obj_set_style_text_align(*columns[column], LV_TEXT_ALIGN_RIGHT, 0);
+            lv_obj_align(*columns[column], LV_ALIGN_TOP_RIGHT, COLUMN_RIGHT[column], y + 5);
+        }
     }
 
     create_rule(traffic_overlay, 18, 424, 444, COLOR_RULE);
@@ -1366,7 +1374,9 @@ void ui_show_traffic_page(const TrafficData& data, const AirlineLogo* logo, cons
         for (int row = 0; row < TRAFFIC_LIST_ROWS; ++row) {
             lv_label_set_text(traffic_row_callsign[row], "");
             lv_label_set_text(traffic_row_airline[row], "");
-            lv_label_set_text(traffic_row_detail[row], "");
+            lv_label_set_text(traffic_row_alt[row], "");
+            lv_label_set_text(traffic_row_speed[row], "");
+            lv_label_set_text(traffic_row_track[row], "");
         }
         lv_label_set_text(
             traffic_footer_label,
@@ -1465,19 +1475,20 @@ void ui_show_traffic_page(const TrafficData& data, const AirlineLogo* logo, cons
         if (index >= data.count) {
             lv_label_set_text(traffic_row_callsign[row], "");
             lv_label_set_text(traffic_row_airline[row], "");
-            lv_label_set_text(traffic_row_detail[row], "");
+            lv_label_set_text(traffic_row_alt[row], "");
+            lv_label_set_text(traffic_row_speed[row], "");
+            lv_label_set_text(traffic_row_track[row], "");
             continue;
         }
 
         const AircraftInfo& other = data.aircraft[index];
         lv_label_set_text(traffic_row_callsign[row], other.callsign);
 
-        if (other.airlineName != nullptr) {
-            char name[40];
-            to_upper_copy(other.airlineName, name, sizeof(name), 0);
-            lv_label_set_text(traffic_row_airline[row], name);
+        if (other.hasRoute) {
+            snprintf(buffer, sizeof(buffer), "%s " LV_SYMBOL_RIGHT " %s", other.routeFrom, other.routeTo);
+            lv_label_set_text(traffic_row_airline[row], buffer);
         } else {
-            lv_label_set_text(traffic_row_airline[row], other.operatorIcao[0] != '\0' ? other.operatorIcao : "-");
+            lv_label_set_text(traffic_row_airline[row], "-");
         }
 
         char altitude[16];
@@ -1486,9 +1497,14 @@ void ui_show_traffic_page(const TrafficData& data, const AirlineLogo* logo, cons
         } else {
             format_thousands(other.altitudeFt, altitude, sizeof(altitude));
         }
-        snprintf(buffer, sizeof(buffer), "%s ft   %.1f nm", altitude, other.distanceNm);
-        lv_label_set_text(traffic_row_detail[row], buffer);
-        lv_obj_align(traffic_row_detail[row], LV_ALIGN_TOP_RIGHT, -18, 255 + (row * 38));
+        snprintf(buffer, sizeof(buffer), "%s ft", altitude);
+        lv_label_set_text(traffic_row_alt[row], buffer);
+
+        snprintf(buffer, sizeof(buffer), "%.0f kt", other.groundSpeedKt);
+        lv_label_set_text(traffic_row_speed[row], buffer);
+
+        snprintf(buffer, sizeof(buffer), "%.0f\xC2\xB0", other.trackDeg);
+        lv_label_set_text(traffic_row_track[row], buffer);
     }
 
     // The feed times out now and then; rather than blanking the page, say how
