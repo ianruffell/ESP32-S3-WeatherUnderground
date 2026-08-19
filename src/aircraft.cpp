@@ -41,7 +41,12 @@ private:
 };
 
 static const char* ADSB_HOST = "https://api.adsb.lol";
-static const char* LOGO_HOST = "https://images.kiwi.com/airlines/64";
+// The /64/ path only holds 54 of our 87 airlines and 303-redirects the rest to
+// /64x64/, which our client does not follow - that is why logos looked missing.
+// Requesting /64x64/ directly resolves 83 of 87. The remaining four redirect to
+// a generic placeholder plane, so not following redirects is deliberate: the
+// operator code reads better than someone else's logo.
+static const char* LOGO_HOST = "https://images.kiwi.com/airlines/64x64";
 static const char* ROUTE_HOST = "https://api.adsbdb.com";
 static const char* ROUTE_FALLBACK_HOST = "https://hexdb.io";
 static constexpr size_t MAX_LOGO_BYTES = 32 * 1024;

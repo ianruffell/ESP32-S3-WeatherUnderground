@@ -113,9 +113,11 @@ Airways shuttle (SHT3T), which adsbdb reports as unknown. Flights neither source
 recognises show "ROUTE UNKNOWN".
 
 Airline logos are fetched on demand from `images.kiwi.com` and cached one at a
-time in PSRAM. Not every airline has one there (United, for instance), in which
-case the operator code is shown instead. This is an unofficial use of that CDN, and airline logos are
-trademarks of their respective owners.
+time in PSRAM. 83 of the 87 airlines in `src/airlines.h` have one; the rest are
+cargo operators, and they show the operator code instead. Redirects are
+deliberately not followed: the CDN answers an unknown code with a generic plane
+icon, which reads worse than the code itself. This is an unofficial use of that
+CDN, and airline logos are trademarks of their respective owners.
 
 ## Notes
 
