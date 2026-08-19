@@ -43,6 +43,7 @@ private:
 static const char* ADSB_HOST = "https://api.adsb.lol";
 static const char* LOGO_HOST = "https://images.kiwi.com/airlines/64";
 static const char* ROUTE_HOST = "https://api.adsbdb.com";
+static const char* ROUTE_FALLBACK_HOST = "https://hexdb.io";
 static constexpr size_t MAX_LOGO_BYTES = 32 * 1024;
 
 // Feeds pad callsigns with spaces ("BAW55G  ") and sometimes with '@' or other
@@ -395,24 +396,7 @@ bool AircraftAPI::fetchAirlineLogo(const char* iata, AirlineLogo& logo) {
     return true;
 }
 
-bool AircraftAPI::fetchRoute(const char* callsign, RouteInfo& route) {
-    if (callsign == nullptr || strlen(callsign) < 3) {
-        return false;
-    }
-
-    if (cachedRoute.isValid && strcmp(cachedRoute.callsign, callsign) == 0) {
-        route = cachedRoute;
-        return true;
-    }
-
-    if (strcmp(missingCallsign, callsign) == 0) {
-        return false;
-    }
-
-    if (WiFi.status() != WL_CONNECTED) {
-        return false;
-    }
-
+bool AircraftAPI::fetchRouteFromAdsbdb(const char* callsign, RouteInfo& route) {
     char url[96];
     snprintf(url, sizeof(url), "%s/v0/callsign/%s", ROUTE_HOST, callsign);
 
@@ -428,11 +412,6 @@ bool AircraftAPI::fetchRoute(const char* callsign, RouteInfo& route) {
     const int status = http.GET();
     if (status != HTTP_CODE_OK) {
         http.end();
-        // 404 means the route is genuinely unknown; remember it. Transport
-        // errors are left to retry.
-        if (status > 0) {
-            snprintf(missingCallsign, sizeof(missingCallsign), "%s", callsign);
-        }
         return false;
     }
 
@@ -455,7 +434,6 @@ bool AircraftAPI::fetchRoute(const char* callsign, RouteInfo& route) {
     JsonObject origin = doc["response"]["flightroute"]["origin"];
     JsonObject destination = doc["response"]["flightroute"]["destination"];
     if (origin.isNull() || destination.isNull()) {
-        snprintf(missingCallsign, sizeof(missingCallsign), "%s", callsign);
         return false;
     }
 
@@ -478,11 +456,135 @@ bool AircraftAPI::fetchRoute(const char* callsign, RouteInfo& route) {
     snprintf(resolved.callsign, sizeof(resolved.callsign), "%s", callsign);
 
     if (resolved.fromCode[0] == '\0' || resolved.toCode[0] == '\0') {
-        snprintf(missingCallsign, sizeof(missingCallsign), "%s", callsign);
         return false;
     }
 
     resolved.isValid = true;
+    route = resolved;
+    return true;
+}
+
+// hexdb answers with a plain "EGCC-EGLL" pair, or "n/a" when it has no route.
+bool AircraftAPI::fetchRouteFromHexdb(const char* callsign, RouteInfo& route) {
+    char url[128];
+    snprintf(url, sizeof(url), "%s/callsign-route?callsign=%s", ROUTE_FALLBACK_HOST, callsign);
+
+    WiFiClientSecure client;
+    client.setInsecure();
+
+    HTTPClient http;
+    http.setTimeout(10000);
+    if (!http.begin(client, url)) {
+        return false;
+    }
+
+    const int status = http.GET();
+    if (status != HTTP_CODE_OK) {
+        http.end();
+        return false;
+    }
+
+    String body = http.getString();
+    http.end();
+    body.trim();
+
+    const int separator = body.indexOf('-');
+    if (body.length() < 5 || separator <= 0 || body.startsWith("n/a")) {
+        return false;
+    }
+
+    // Multi-leg routes list every stop; the first and last are what matter.
+    char fromIcao[8];
+    char toIcao[8];
+    copy_field(fromIcao, sizeof(fromIcao), body.substring(0, separator).c_str());
+    copy_field(toIcao, sizeof(toIcao), body.substring(body.lastIndexOf('-') + 1).c_str());
+    if (strlen(fromIcao) < 3 || strlen(toIcao) < 3) {
+        return false;
+    }
+
+    RouteInfo resolved = {};
+    if (!lookupAirport(fromIcao, resolved.fromCode, sizeof(resolved.fromCode), resolved.fromCity, sizeof(resolved.fromCity))) {
+        snprintf(resolved.fromCode, sizeof(resolved.fromCode), "%s", fromIcao);
+    }
+    if (!lookupAirport(toIcao, resolved.toCode, sizeof(resolved.toCode), resolved.toCity, sizeof(resolved.toCity))) {
+        snprintf(resolved.toCode, sizeof(resolved.toCode), "%s", toIcao);
+    }
+
+    snprintf(resolved.callsign, sizeof(resolved.callsign), "%s", callsign);
+    resolved.isValid = true;
+    route = resolved;
+    return true;
+}
+
+// Turns an ICAO airport code into the IATA code and name the page displays.
+bool AircraftAPI::lookupAirport(const char* icao, char* code, size_t codeSize, char* city, size_t citySize) {
+    char url[128];
+    snprintf(url, sizeof(url), "%s/api/v1/airport/icao/%s", ROUTE_FALLBACK_HOST, icao);
+
+    WiFiClientSecure client;
+    client.setInsecure();
+
+    HTTPClient http;
+    http.setTimeout(10000);
+    if (!http.begin(client, url)) {
+        return false;
+    }
+
+    if (http.GET() != HTTP_CODE_OK) {
+        http.end();
+        return false;
+    }
+
+    JsonDocument filter;
+    filter["iata"] = true;
+    filter["airport"] = true;
+
+    JsonDocument doc;
+    const DeserializationError error =
+        deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
+    http.end();
+
+    if (error) {
+        return false;
+    }
+
+    copy_field(code, codeSize, doc["iata"].as<const char*>());
+    copy_text(city, citySize, doc["airport"].as<const char*>());
+
+    // "Manchester Airport" reads better as just "Manchester" next to the codes.
+    char* suffix = strstr(city, " Airport");
+    if (suffix != nullptr) {
+        *suffix = '\0';
+    }
+
+    return strlen(code) >= 3;
+}
+
+bool AircraftAPI::fetchRoute(const char* callsign, RouteInfo& route) {
+    if (callsign == nullptr || strlen(callsign) < 3) {
+        return false;
+    }
+
+    if (cachedRoute.isValid && strcmp(cachedRoute.callsign, callsign) == 0) {
+        route = cachedRoute;
+        return true;
+    }
+
+    if (strcmp(missingCallsign, callsign) == 0) {
+        return false;
+    }
+
+    if (WiFi.status() != WL_CONNECTED) {
+        return false;
+    }
+
+    RouteInfo resolved = {};
+    if (!fetchRouteFromAdsbdb(callsign, resolved) && !fetchRouteFromHexdb(callsign, resolved)) {
+        // Neither source knows it; do not ask again for this callsign.
+        snprintf(missingCallsign, sizeof(missingCallsign), "%s", callsign);
+        return false;
+    }
+
     cachedRoute = resolved;
     missingCallsign[0] = '\0';
     route = resolved;

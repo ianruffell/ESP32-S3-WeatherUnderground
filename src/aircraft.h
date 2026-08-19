@@ -65,6 +65,12 @@ public:
     bool fetchAirlineLogo(const char* iata, AirlineLogo& logo);
 
 private:
+    // Two route sources with complementary coverage: adsbdb knows airline
+    // flight numbers (BAW1379), hexdb knows radio callsigns (SHT3T).
+    bool fetchRouteFromAdsbdb(const char* callsign, RouteInfo& route);
+    bool fetchRouteFromHexdb(const char* callsign, RouteInfo& route);
+    bool lookupAirport(const char* icao, char* code, size_t codeSize, char* city, size_t citySize);
+
     AirlineLogo cachedLogo = {};
     char missingIata[4] = {0};     // last code known to have no logo, to avoid refetching
     RouteInfo cachedRoute = {};    // last resolved route, keyed by callsign
