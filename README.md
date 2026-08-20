@@ -104,13 +104,19 @@ per refresh, so a row that has just come into range may briefly show "-". Ground
 are filtered out. Aircraft whose operator is not in `src/airlines.h` show their
 ICAO callsign prefix instead of a name, and no logo.
 
-Departure and destination for the featured flight are looked up by callsign and
-cached until the featured aircraft changes. ADS-B itself carries no route
+Departure and destination are looked up by callsign and cached. ADS-B itself carries no route
 information. Two sources are tried, because their coverage is complementary:
 [adsbdb.com](https://api.adsbdb.com) knows airline flight numbers (BAW1379),
 while [hexdb.io](https://hexdb.io) knows radio callsigns such as the British
 Airways shuttle (SHT3T), which adsbdb reports as unknown. Flights neither source
 recognises show "ROUTE UNKNOWN".
+
+Both databases key on callsigns that airlines reuse for different routes, so an
+entry can be stale: EXS19G was reported as Girona to Glasgow while the aircraft
+was climbing south out of London. A route is therefore checked against the
+aircraft's own track, and one whose destination lies more than 90 degrees off it
+is rejected in favour of the other source. If both disagree the closer one is
+used, since an aircraft mid-turn can fail the check legitimately.
 
 Airline logos are fetched on demand from `images.kiwi.com` and cached one at a
 time in PSRAM. 83 of the 87 airlines in `src/airlines.h` have one; the rest are

@@ -136,6 +136,41 @@ static bool operator_code_from_callsign(const char* callsign, char* out) {
     return true;
 }
 
+// Initial great-circle bearing from one point to another, in degrees.
+static float bearing_between(float fromLat, float fromLon, float toLat, float toLon) {
+    const float phi1 = radians(fromLat);
+    const float phi2 = radians(toLat);
+    const float deltaLon = radians(toLon - fromLon);
+    const float y = sinf(deltaLon) * cosf(phi2);
+    const float x = (cosf(phi1) * sinf(phi2)) - (sinf(phi1) * cosf(phi2) * cosf(deltaLon));
+    float bearing = degrees(atan2f(y, x));
+    while (bearing < 0.0f) {
+        bearing += 360.0f;
+    }
+    return bearing;
+}
+
+static float angle_difference(float a, float b) {
+    float difference = fmodf(fabsf(a - b), 360.0f);
+    return difference > 180.0f ? 360.0f - difference : difference;
+}
+
+// How far the aircraft's track is from pointing at the claimed destination.
+// Route databases key on callsigns that airlines reuse for different routes, so
+// a stale entry sends the aircraft somewhere it is visibly not going. Returns
+// 0 when there is nothing to check against.
+static float route_track_error(const RouteInfo& route, const AircraftInfo& aircraft) {
+    const bool haveDestination = route.toLatitude != 0.0f || route.toLongitude != 0.0f;
+    const bool havePosition = aircraft.latitude != 0.0f || aircraft.longitude != 0.0f;
+    if (!haveDestination || !havePosition || aircraft.groundSpeedKt < 80.0f) {
+        return 0.0f;
+    }
+
+    const float toDestination = bearing_between(
+        aircraft.latitude, aircraft.longitude, route.toLatitude, route.toLongitude);
+    return angle_difference(toDestination, aircraft.trackDeg);
+}
+
 static const AirlineEntry* lookup_airline(const char* icao) {
     if (icao == nullptr || icao[0] == '\0') {
         return nullptr;
@@ -223,6 +258,8 @@ bool AircraftAPI::fetchTraffic(double latitude, double longitude, uint16_t radiu
     entry["dst"] = true;
     entry["dir"] = true;
     entry["baro_rate"] = true;
+    entry["lat"] = true;
+    entry["lon"] = true;
 
     JsonDocument doc;
     const DeserializationError error = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
@@ -253,6 +290,8 @@ bool AircraftAPI::fetchTraffic(double latitude, double longitude, uint16_t radiu
         info.distanceNm = item["dst"].as<float>();
         info.bearingDeg = item["dir"].as<float>();
         info.verticalRateFpm = item["baro_rate"].as<float>();
+        info.latitude = item["lat"].as<float>();
+        info.longitude = item["lon"].as<float>();
 
         // Drop entries whose callsign was filler rather than a real identifier.
         if (strlen(info.callsign) < 3) {
@@ -426,6 +465,8 @@ bool AircraftAPI::fetchRouteFromAdsbdb(const char* callsign, RouteInfo& route) {
     flightroute["origin"]["municipality"] = true;
     flightroute["destination"]["iata_code"] = true;
     flightroute["destination"]["municipality"] = true;
+    flightroute["destination"]["latitude"] = true;
+    flightroute["destination"]["longitude"] = true;
 
     JsonDocument doc;
     const DeserializationError error =
@@ -459,6 +500,8 @@ bool AircraftAPI::fetchRouteFromAdsbdb(const char* callsign, RouteInfo& route) {
         *comma = '\0';
     }
     snprintf(resolved.callsign, sizeof(resolved.callsign), "%s", callsign);
+    resolved.toLatitude = destination["latitude"].as<float>();
+    resolved.toLongitude = destination["longitude"].as<float>();
 
     if (resolved.fromCode[0] == '\0' || resolved.toCode[0] == '\0') {
         return false;
@@ -508,10 +551,13 @@ bool AircraftAPI::fetchRouteFromHexdb(const char* callsign, RouteInfo& route) {
     }
 
     RouteInfo resolved = {};
-    if (!lookupAirport(fromIcao, resolved.fromCode, sizeof(resolved.fromCode), resolved.fromCity, sizeof(resolved.fromCity))) {
+    if (!lookupAirport(fromIcao, resolved.fromCode, sizeof(resolved.fromCode),
+                       resolved.fromCity, sizeof(resolved.fromCity), nullptr, nullptr)) {
         snprintf(resolved.fromCode, sizeof(resolved.fromCode), "%s", fromIcao);
     }
-    if (!lookupAirport(toIcao, resolved.toCode, sizeof(resolved.toCode), resolved.toCity, sizeof(resolved.toCity))) {
+    if (!lookupAirport(toIcao, resolved.toCode, sizeof(resolved.toCode),
+                       resolved.toCity, sizeof(resolved.toCity),
+                       &resolved.toLatitude, &resolved.toLongitude)) {
         snprintf(resolved.toCode, sizeof(resolved.toCode), "%s", toIcao);
     }
 
@@ -522,7 +568,8 @@ bool AircraftAPI::fetchRouteFromHexdb(const char* callsign, RouteInfo& route) {
 }
 
 // Turns an ICAO airport code into the IATA code and name the page displays.
-bool AircraftAPI::lookupAirport(const char* icao, char* code, size_t codeSize, char* city, size_t citySize) {
+bool AircraftAPI::lookupAirport(const char* icao, char* code, size_t codeSize, char* city, size_t citySize,
+                                float* latitude, float* longitude) {
     char url[128];
     snprintf(url, sizeof(url), "%s/api/v1/airport/icao/%s", ROUTE_FALLBACK_HOST, icao);
 
@@ -543,6 +590,8 @@ bool AircraftAPI::lookupAirport(const char* icao, char* code, size_t codeSize, c
     JsonDocument filter;
     filter["iata"] = true;
     filter["airport"] = true;
+    filter["latitude"] = true;
+    filter["longitude"] = true;
 
     JsonDocument doc;
     const DeserializationError error =
@@ -555,6 +604,12 @@ bool AircraftAPI::lookupAirport(const char* icao, char* code, size_t codeSize, c
 
     copy_field(code, codeSize, doc["iata"].as<const char*>());
     copy_text(city, citySize, doc["airport"].as<const char*>());
+    if (latitude != nullptr) {
+        *latitude = doc["latitude"].as<float>();
+    }
+    if (longitude != nullptr) {
+        *longitude = doc["longitude"].as<float>();
+    }
 
     // "Manchester Airport" reads better as just "Manchester" next to the codes.
     char* suffix = strstr(city, " Airport");
@@ -590,7 +645,8 @@ void AircraftAPI::cacheRoute(const char* callsign, const RouteInfo& route) {
     slot.used = true;
 }
 
-bool AircraftAPI::fetchRoute(const char* callsign, RouteInfo& route) {
+bool AircraftAPI::fetchRoute(const AircraftInfo& aircraft, RouteInfo& route) {
+    const char* callsign = aircraft.callsign;
     if (callsign == nullptr || strlen(callsign) < 3) {
         return false;
     }
@@ -610,17 +666,48 @@ bool AircraftAPI::fetchRoute(const char* callsign, RouteInfo& route) {
         return false;
     }
 
-    RouteInfo resolved = {};
-    if (!fetchRouteFromAdsbdb(callsign, resolved) && !fetchRouteFromHexdb(callsign, resolved)) {
-        RouteInfo unknown = {};
-        snprintf(unknown.callsign, sizeof(unknown.callsign), "%s", callsign);
-        cacheRoute(callsign, unknown);
-        return false;
+    // Beyond this the aircraft is flying away from the destination the database
+    // claims, which means the entry is stale rather than the aircraft turning.
+    static constexpr float MAX_TRACK_ERROR_DEG = 90.0f;
+
+    RouteInfo primary = {};
+    const bool havePrimary = fetchRouteFromAdsbdb(callsign, primary);
+    const float primaryError = havePrimary ? route_track_error(primary, aircraft) : 0.0f;
+
+    if (havePrimary && primaryError <= MAX_TRACK_ERROR_DEG) {
+        cacheRoute(callsign, primary);
+        route = primary;
+        return true;
     }
 
-    cacheRoute(callsign, resolved);
-    route = resolved;
-    return true;
+    // Either nothing came back, or what came back disagrees with where the
+    // aircraft is actually heading, so ask the other database.
+    RouteInfo secondary = {};
+    const bool haveSecondary = fetchRouteFromHexdb(callsign, secondary);
+    const float secondaryError = haveSecondary ? route_track_error(secondary, aircraft) : 0.0f;
+
+    if (haveSecondary && secondaryError <= MAX_TRACK_ERROR_DEG) {
+        cacheRoute(callsign, secondary);
+        route = secondary;
+        return true;
+    }
+
+    // Both disagree with the track. Prefer the closer one rather than showing
+    // nothing, since an aircraft mid-turn can fail the check legitimately.
+    if (havePrimary || haveSecondary) {
+        const bool useSecondary = haveSecondary && (!havePrimary || secondaryError < primaryError);
+        const RouteInfo& best = useSecondary ? secondary : primary;
+        log_i("[route] %s track %.0f, %s off by %.0f deg",
+              callsign, aircraft.trackDeg, best.toCode, useSecondary ? secondaryError : primaryError);
+        cacheRoute(callsign, best);
+        route = best;
+        return true;
+    }
+
+    RouteInfo unknown = {};
+    snprintf(unknown.callsign, sizeof(unknown.callsign), "%s", callsign);
+    cacheRoute(callsign, unknown);
+    return false;
 }
 
 void AircraftAPI::resolveRoutes(TrafficData& data, uint8_t maxNewLookups) {
@@ -635,7 +722,7 @@ void AircraftAPI::resolveRoutes(TrafficData& data, uint8_t maxNewLookups) {
         if (!known && spent < maxNewLookups) {
             // Counts the attempt, not the hit: a miss costs requests too.
             ++spent;
-            known = fetchRoute(aircraft.callsign, route);
+            known = fetchRoute(aircraft, route);
         }
 
         if (known && route.isValid) {

@@ -258,7 +258,7 @@ static void trafficFetchTask(void* parameter) {
                     // Featured aircraft first, then fill in the listed ones a
                     // couple per cycle so a fresh list does not fire five
                     // lookups at once. They stay cached while in range.
-                    routeValid = aircraftApi.fetchRoute(data.aircraft[0].callsign, route);
+                    routeValid = aircraftApi.fetchRoute(data.aircraft[0], route);
                     aircraftApi.resolveRoutes(data, 2);
                 }
 

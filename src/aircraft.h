@@ -18,6 +18,8 @@ struct AircraftInfo {
     float groundSpeedKt;
     float trackDeg;
     float verticalRateFpm;
+    float latitude;
+    float longitude;
     bool onGround;
     char routeFrom[6];  // empty until the route is known
     char routeTo[6];
@@ -52,6 +54,8 @@ struct RouteInfo {
     char fromCity[24];
     char toCity[24];
     char callsign[12];
+    float toLatitude;    // used to check the route against the observed track
+    float toLongitude;
     bool isValid;
 };
 
@@ -59,9 +63,10 @@ class AircraftAPI {
 public:
     bool fetchTraffic(double latitude, double longitude, uint16_t radiusNm, TrafficData& data);
 
-    // Resolves a callsign to its route, reusing the cached answer when the
-    // callsign is unchanged. False when the route is unknown.
-    bool fetchRoute(const char* callsign, RouteInfo& route);
+    // Resolves an aircraft's route, reusing the cached answer for its callsign.
+    // The aircraft's position and track are used to reject a route whose
+    // destination it is plainly not flying towards. False when unknown.
+    bool fetchRoute(const AircraftInfo& aircraft, RouteInfo& route);
 
     // Fetches and decodes `iata`'s logo, reusing the cached one when it matches.
     // Returns false when no logo exists for that airline.
@@ -77,7 +82,8 @@ private:
     // flight numbers (BAW1379), hexdb knows radio callsigns (SHT3T).
     bool fetchRouteFromAdsbdb(const char* callsign, RouteInfo& route);
     bool fetchRouteFromHexdb(const char* callsign, RouteInfo& route);
-    bool lookupAirport(const char* icao, char* code, size_t codeSize, char* city, size_t citySize);
+    bool lookupAirport(const char* icao, char* code, size_t codeSize, char* city, size_t citySize,
+                       float* latitude, float* longitude);
     bool cachedRouteFor(const char* callsign, RouteInfo& route);
     void cacheRoute(const char* callsign, const RouteInfo& route);
 
