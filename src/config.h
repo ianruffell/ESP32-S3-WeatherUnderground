@@ -8,6 +8,9 @@
 #define WEATHER_API_KEY ""
 
 #define WEATHER_UPDATE_INTERVAL 600000
+// ProWeatherLive is the user's own station rather than a shared API, so it can
+// be polled far more often.
+#define WEATHER_UPDATE_INTERVAL_PROWEATHERLIVE 20000
 #define WEATHER_MAX_RETRY_INTERVAL 1800000
 
 #define WIFI_CONNECT_TIMEOUT_MS 15000

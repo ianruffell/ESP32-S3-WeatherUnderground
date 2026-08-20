@@ -94,7 +94,8 @@ String urlEncode(const String& value) {
     return encoded;
 }
 
-int authenticatedGet(const String& path, const String& token, String& body) {
+int authenticatedGet(const String& path, const String& token, String& body,
+                    const char* accept = "application/json, application/msgpack") {
     WiFiClientSecure client;
     client.setInsecure();
 
@@ -108,12 +109,18 @@ int authenticatedGet(const String& path, const String& token, String& body) {
     http.setReuse(false);
     http.setTimeout(15000);
     http.setUserAgent("ESP32-S3-Weather-Display/1.0");
-    http.addHeader("Accept", "application/json, application/msgpack");
+    if (accept != nullptr && accept[0] != '\0') {
+        http.addHeader("Accept", accept);
+    }
     http.addHeader("Authorization", "Bearer " + token);
 
     const int httpCode = http.GET();
     body = http.getString();
     http.end();
+    // Logged on failure only, and never the token or Authorization header.
+    if (httpCode != HTTP_CODE_OK) {
+        log_i("[pwl] %s -> %d: %.140s", path.c_str(), httpCode, body.c_str());
+    }
     return httpCode;
 }
 
@@ -394,12 +401,31 @@ bool WeatherAPI::fetchFromWunderground(WeatherData& data) {
     return false;
 }
 
+// A station's position and timezone are fixed, so they are captured alongside
+// its device id and reused while that id stays cached.
+static void captureStationMetadata(JsonObjectConst device, float& latitude, float& longitude, int& utcOffsetMinutes) {
+    latitude = objectNumber(device, "latitude", "lat");
+    longitude = objectNumber(device, "longitude", "lon");
+
+    const float explicitOffset = objectNumber(device, "timezoneOffset", "utcOffset");
+    const String timeZone = objectString(device, "timezone", "timeZone");
+    utcOffsetMinutes = explicitOffset == 0.0f
+        ? currentOffsetForTimeZone(timeZone)
+        : normalizeOffsetMinutes(explicitOffset);
+}
+
 bool WeatherAPI::fetchFromProWeatherLive(WeatherData& data) {
     if (stationId.isEmpty() || credential.isEmpty()) {
         data.isValid = false;
         return false;
     }
 
+    String deviceId;
+    if (cachedDeviceStationId == stationId) {
+        deviceId = cachedDeviceId;
+    }
+
+    if (deviceId.isEmpty()) {
     String deviceBody;
     const String devicePath = "weatherDevices?wsid=" + urlEncode(stationId) +
                               "&%24limit=1&%24paginate=false";
@@ -422,6 +448,9 @@ bool WeatherAPI::fetchFromProWeatherLive(WeatherData& data) {
     }
 
     JsonObjectConst device;
+    // Held separately: when the match comes from the station list below, the
+    // document backing it goes out of scope before `device` would be read.
+    String matchedDeviceId;
     JsonArrayConst devices = deviceDoc.as<JsonArrayConst>();
     if (!devices.isNull() && devices.size() > 0) {
         device = devices[0].as<JsonObjectConst>();
@@ -432,22 +461,87 @@ bool WeatherAPI::fetchFromProWeatherLive(WeatherData& data) {
     }
 
     if (device.isNull()) {
-        Serial.println("ProWeatherLive station was not found for this account.");
-        return false;
+        // The server side wsid filter returns nothing here, so fall back to
+        // listing the account's stations and matching the WSID ourselves.
+        log_i("[pwl] wsid filter matched nothing for '%s'; searching the station list", stationId.c_str());
+
+        String listBody;
+        if (authenticatedGet("weatherDevices?%24limit=50&%24paginate=false", credential, listBody) != HTTP_CODE_OK) {
+            return false;
+        }
+
+        JsonDocument listFilter;
+        JsonObject listEntry = listFilter.add<JsonObject>();
+        listEntry["_id"] = true;
+        listEntry["id"] = true;
+        listEntry["wsid"] = true;
+        listEntry["name"] = true;
+        listEntry["latitude"] = true;
+        listEntry["longitude"] = true;
+        listEntry["lat"] = true;
+        listEntry["lon"] = true;
+        listEntry["timezone"] = true;
+        listEntry["timeZone"] = true;
+        listEntry["timezoneOffset"] = true;
+        listEntry["utcOffset"] = true;
+
+        JsonDocument listDoc;
+        if (deserializeJson(listDoc, listBody, DeserializationOption::Filter(listFilter))) {
+            return false;
+        }
+
+        JsonArrayConst all = listDoc.is<JsonArrayConst>()
+            ? listDoc.as<JsonArrayConst>()
+            : listDoc["data"].as<JsonArrayConst>();
+
+        for (JsonObjectConst entry : all) {
+            const char* wsid = entry["wsid"].as<const char*>();
+            if (wsid != nullptr && stationId.equalsIgnoreCase(wsid)) {
+                matchedDeviceId = objectString(entry, "_id", "id");
+                captureStationMetadata(entry, cachedLatitude, cachedLongitude, cachedUtcOffsetMinutes);
+                log_i("[pwl] matched '%s' in the station list", wsid);
+                break;
+            }
+        }
+
+        if (matchedDeviceId.isEmpty()) {
+            log_i("[pwl] '%s' is not one of this account's stations:", stationId.c_str());
+            for (JsonObjectConst entry : all) {
+                log_i("[pwl]   wsid='%s' name='%s'",
+                      entry["wsid"].as<const char*>() ? entry["wsid"].as<const char*>() : "?",
+                      entry["name"].as<const char*>() ? entry["name"].as<const char*>() : "?");
+            }
+            return false;
+        }
     }
 
-    const String deviceId = objectString(device, "_id", "id");
+    if (!device.isNull()) {
+        captureStationMetadata(device, cachedLatitude, cachedLongitude, cachedUtcOffsetMinutes);
+    }
+
+    deviceId = matchedDeviceId.isEmpty()
+        ? objectString(device, "_id", "id")
+        : matchedDeviceId;
     if (deviceId.isEmpty()) {
         Serial.println("ProWeatherLive station response did not include a device ID.");
         return false;
     }
 
+    cachedDeviceStationId = stationId;
+    cachedDeviceId = deviceId;
+    }
+
     String metricsBody;
     const String metricsPath = "weatherMetrics/batchLastData?devices%5B0%5D=" + urlEncode(deviceId);
-    const int metricsCode = authenticatedGet(metricsPath, credential, metricsBody);
+    // This endpoint answers 406 to every Accept value, including */*, and only
+    // responds when the header is absent. It returns MessagePack regardless.
+    const int metricsCode = authenticatedGet(metricsPath, credential, metricsBody, "");
     if (metricsCode != HTTP_CODE_OK) {
         Serial.print("ProWeatherLive observation request failed: ");
         Serial.println(metricsCode);
+        // The cached device id may be stale; resolve it again next time.
+        cachedDeviceStationId = "";
+        cachedDeviceId = "";
         return false;
     }
 
@@ -501,14 +595,9 @@ bool WeatherAPI::fetchFromProWeatherLive(WeatherData& data) {
     data.uvIndex = metricNumber(headers, row, uvKeys, 3);
     data.solarRadiation = metricNumber(headers, row, solarKeys, 3);
     data.feelTemp = metricNumber(headers, row, feelsLikeKeys, 3, data.temperature);
-    data.latitude = objectNumber(device, "latitude", "lat");
-    data.longitude = objectNumber(device, "longitude", "lon");
-
-    const float explicitOffset = objectNumber(device, "timezoneOffset", "utcOffset");
-    const String timeZone = objectString(device, "timezone", "timeZone");
-    data.utcOffsetMinutes = explicitOffset == 0.0f
-        ? currentOffsetForTimeZone(timeZone)
-        : normalizeOffsetMinutes(explicitOffset);
+    data.latitude = cachedLatitude;
+    data.longitude = cachedLongitude;
+    data.utcOffsetMinutes = cachedUtcOffsetMinutes;
     data.lastUpdate = static_cast<int>(metricNumber(
         headers,
         row,

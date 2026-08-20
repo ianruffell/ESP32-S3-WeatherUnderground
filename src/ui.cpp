@@ -684,11 +684,22 @@ static void configure_panel_variant() {
     displayBus->endWrite();
 }
 
+// Updating a page calls several ui_* functions, and repainting inside each one
+// cost a full 480x480 redraw apiece: a page switch spent ~800ms doing the same
+// work five times. They now mark the screen dirty and the main loop repaints
+// once per iteration.
+static bool redraw_pending = false;
+
 static void request_full_redraw() {
-    if (disp == nullptr) {
+    redraw_pending = true;
+}
+
+void ui_flush() {
+    if (!redraw_pending || disp == nullptr) {
         return;
     }
 
+    redraw_pending = false;
     lv_obj_invalidate(lv_scr_act());
     lv_refr_now(disp);
 }
@@ -1428,8 +1439,14 @@ void ui_show_traffic_page(const TrafficData& data, const AirlineLogo* logo, cons
     if (logo != nullptr && logo->isValid && logo->png != nullptr) {
         // RAW hands the encoded PNG to LVGL's decoder. The cache is keyed on the
         // descriptor, so drop the old entry or a previous airline's logo is
-        // redrawn from stale pixels.
-        lv_image_cache_drop(&traffic_logo_dsc);
+        // redrawn from stale pixels. Only when it actually changed, though:
+        // dropping it forces a PNG decode on every render.
+        static const uint8_t* shown_logo = nullptr;
+        const bool logo_changed = shown_logo != logo->png;
+        if (logo_changed) {
+            lv_image_cache_drop(&traffic_logo_dsc);
+            shown_logo = logo->png;
+        }
 
         traffic_logo_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
         traffic_logo_dsc.header.cf = LV_COLOR_FORMAT_RAW;
@@ -1440,7 +1457,9 @@ void ui_show_traffic_page(const TrafficData& data, const AirlineLogo* logo, cons
         traffic_logo_dsc.data = logo->png;
         traffic_logo_dsc.data_size = logo->pngSize;
 
-        lv_image_set_src(traffic_logo_image, &traffic_logo_dsc);
+        if (logo_changed) {
+            lv_image_set_src(traffic_logo_image, &traffic_logo_dsc);
+        }
         lv_obj_clear_flag(traffic_logo_image, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(traffic_operator_tag.box, LV_OBJ_FLAG_HIDDEN);
     } else {

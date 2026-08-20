@@ -127,6 +127,9 @@ CDN, and airline logos are trademarks of their respective owners.
 
 ## Notes
 
-- The default weather refresh interval is 10 minutes.
+- Weather refreshes every 10 minutes, or every 20 seconds on ProWeatherLive,
+  which is the user's own station rather than a shared API.
+- Weather and air traffic are both fetched on the second core and handed to the
+  UI through staging copies, so a slow request never stalls the display.
 - Failed weather requests back off automatically to reduce API hammering.
 - The repo ignores PlatformIO build output and editor-specific local files.

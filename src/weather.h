@@ -39,6 +39,14 @@ private:
     String credential;
     bool fetchFromWunderground(WeatherData& data);
     bool fetchFromProWeatherLive(WeatherData& data);
+
+    // A station's internal device id never changes, so resolving it once saves
+    // a request on every refresh. Cleared if the metrics call later fails.
+    String cachedDeviceStationId;
+    String cachedDeviceId;
+    float cachedLatitude = 0.0f;
+    float cachedLongitude = 0.0f;
+    int cachedUtcOffsetMinutes = 0;
 };
 
 #endif

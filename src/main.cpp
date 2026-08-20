@@ -96,8 +96,14 @@ static String currentSetupPageUrl() {
     return url;
 }
 
+static unsigned long baseWeatherRefreshIntervalMs() {
+    return deviceSettings.weatherProvider == "proweatherlive"
+        ? WEATHER_UPDATE_INTERVAL_PROWEATHERLIVE
+        : WEATHER_UPDATE_INTERVAL;
+}
+
 static unsigned long nextWeatherRefreshIntervalMs(uint8_t consecutiveFailures) {
-    unsigned long interval = WEATHER_UPDATE_INTERVAL;
+    unsigned long interval = baseWeatherRefreshIntervalMs();
     for (uint8_t i = 0; i < consecutiveFailures; ++i) {
         if (interval >= WEATHER_MAX_RETRY_INTERVAL / 2) {
             return WEATHER_MAX_RETRY_INTERVAL;
@@ -211,6 +217,23 @@ struct TrafficSnapshot {
     unsigned long fetchedAt;
 };
 
+// Weather is fetched on the same background task as traffic and handed to the
+// UI through a staging copy, so a 2-6s round trip never stalls the display.
+struct WeatherStagingPage {
+    WeatherData data;
+    float latitude;
+    float longitude;
+    String timeZone;
+    bool valid;
+};
+
+static WeatherStagingPage weatherStaging[MAX_WEATHER_PAGES];
+static WeatherData weatherTaskPages[MAX_WEATHER_PAGES];  // task's own working set
+static volatile bool weatherPending = false;
+static volatile bool weatherFetchSucceeded = false;
+static unsigned long lastWeatherFetch = 0;
+static unsigned long lastTrafficFetchStarted = 0;
+
 static TrafficSnapshot trafficFront = {};  // owned by the UI
 static TrafficSnapshot trafficBack = {};   // owned by the fetch task
 static SemaphoreHandle_t trafficMutex = nullptr;
@@ -233,11 +256,19 @@ static void publishTrafficParameters() {
     xSemaphoreGive(trafficMutex);
 }
 
+static bool fetchWeatherPagesIntoStaging();
+static unsigned long baseWeatherRefreshIntervalMs();
+static unsigned long nextWeatherRefreshIntervalMs(uint8_t consecutiveFailures);
+
+// Both feeds share one task so their TLS connections never overlap: two
+// handshakes at once would need roughly 80KB of heap between them.
 static void trafficFetchTask(void* parameter) {
     LV_UNUSED(parameter);
 
     for (;;) {
-        if (deviceSettings.trafficEnabled && WiFi.status() == WL_CONNECTED) {
+        const bool trafficDue = (millis() - lastTrafficFetchStarted) >= TRAFFIC_UPDATE_INTERVAL_MS;
+        if (trafficDue && deviceSettings.trafficEnabled && WiFi.status() == WL_CONNECTED) {
+            lastTrafficFetchStarted = millis();
             xSemaphoreTake(trafficMutex, portMAX_DELAY);
             const double latitude = trafficLatitude;
             const double longitude = trafficLongitude;
@@ -296,7 +327,19 @@ static void trafficFetchTask(void* parameter) {
             }
         }
 
-        vTaskDelay(pdMS_TO_TICKS(TRAFFIC_UPDATE_INTERVAL_MS));
+        const bool weatherDue = (millis() - lastWeatherFetch) >= weatherRefreshIntervalMs;
+        if (weatherDue && !weatherPending && WiFi.status() == WL_CONNECTED &&
+            deviceSettings.hasWeatherCredentials() && weatherApi != nullptr) {
+            lastWeatherFetch = millis();
+            const bool succeeded = fetchWeatherPagesIntoStaging();
+
+            xSemaphoreTake(trafficMutex, portMAX_DELAY);
+            weatherFetchSucceeded = succeeded;
+            weatherPending = true;
+            xSemaphoreGive(trafficMutex);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
 
@@ -511,6 +554,7 @@ static void applySettingsToRuntime() {
     deviceSettings.sanitizeWeatherPages();
     clampActiveWeatherPageIndex();
 
+
     const String credential = deviceSettings.weatherProvider == "proweatherlive"
         ? deviceSettings.proWeatherLiveToken
         : deviceSettings.weatherApiKey;
@@ -639,25 +683,21 @@ static void handlePendingSettingsSave() {
     scheduleRestart();
 }
 
-static bool fetchWeatherPages() {
+// Runs on the fetch task: network and parsing only. Applying the result to the
+// UI and to settings stays on the main loop.
+static bool fetchWeatherPagesIntoStaging() {
     const uint8_t pageCount = configuredWeatherPageCount();
     if (pageCount == 0) {
         return false;
     }
 
-    Serial.println("Fetching weather data...");
-    bool metadataChanged = false;
     bool anySuccess = false;
 
     for (uint8_t i = 0; i < pageCount; ++i) {
-        const String title = deviceSettings.weatherPageTitle(i);
-        Serial.print("Updating page: ");
-        Serial.println(title);
+        const float previousPressure = weatherTaskPages[i].pressure;
+        const bool hadPreviousPressure = weatherTaskPages[i].isValid;
 
-        const float previousPressure = weatherPages[i].pressure;
-        const bool hadPreviousPressure = weatherPages[i].isValid;
-
-        WeatherData fetched = weatherPages[i];
+        WeatherData fetched = weatherTaskPages[i];
         const String credential = deviceSettings.weatherProvider == "proweatherlive"
             ? deviceSettings.proWeatherLiveToken
             : deviceSettings.weatherApiKey;
@@ -668,47 +708,73 @@ static bool fetchWeatherPages() {
         );
 
         if (!weatherApi->fetchWeatherData(fetched)) {
-            Serial.println("Failed to fetch weather data for page");
-            if (i == activeWeatherPageIndex && !weatherPages[i].isValid) {
-                ui_show_error("Connection error");
-            }
             continue;
         }
 
         if (hadPreviousPressure) {
             const float pressureDelta = fetched.pressure - previousPressure;
-            if (pressureDelta > 0.3f) {
-                fetched.pressureTrend = 1;
-            } else if (pressureDelta < -0.3f) {
-                fetched.pressureTrend = -1;
-            } else {
-                fetched.pressureTrend = 0;
-            }
+            fetched.pressureTrend = pressureDelta > 0.3f ? 1 : (pressureDelta < -0.3f ? -1 : 0);
         } else {
             fetched.pressureTrend = 0;
         }
 
-        weatherPages[i] = fetched;
+        weatherTaskPages[i] = fetched;
         anySuccess = true;
 
+        xSemaphoreTake(trafficMutex, portMAX_DELAY);
+        weatherStaging[i].data = fetched;
+        weatherStaging[i].latitude = fetched.latitude;
+        weatherStaging[i].longitude = fetched.longitude;
+        weatherStaging[i].timeZone = formatUtcOffset(fetched.utcOffsetMinutes);
+        weatherStaging[i].valid = true;
+        xSemaphoreGive(trafficMutex);
+    }
+
+    return anySuccess;
+}
+
+// Applies a staged fetch on the main loop: display copies, page metadata and
+// the settings write all happen here.
+static bool consumeWeatherSnapshot() {
+    if (!weatherPending) {
+        return false;
+    }
+
+    bool metadataChanged = false;
+
+    xSemaphoreTake(trafficMutex, portMAX_DELAY);
+    for (uint8_t i = 0; i < MAX_WEATHER_PAGES; ++i) {
+        if (!weatherStaging[i].valid) {
+            continue;
+        }
+        weatherStaging[i].valid = false;
+        weatherPages[i] = weatherStaging[i].data;
+
         WeatherPageSettings& pageSettings = deviceSettings.weatherPages[i];
-        const String derivedTimeZone = formatUtcOffset(fetched.utcOffsetMinutes);
-        if (fabs(pageSettings.latitude - fetched.latitude) > 0.001f ||
-            fabs(pageSettings.longitude - fetched.longitude) > 0.001f ||
-            pageSettings.timeZone != derivedTimeZone) {
-            pageSettings.latitude = fetched.latitude;
-            pageSettings.longitude = fetched.longitude;
-            pageSettings.timeZone = derivedTimeZone;
+        if (fabs(pageSettings.latitude - weatherStaging[i].latitude) > 0.001f ||
+            fabs(pageSettings.longitude - weatherStaging[i].longitude) > 0.001f ||
+            pageSettings.timeZone != weatherStaging[i].timeZone) {
+            pageSettings.latitude = weatherStaging[i].latitude;
+            pageSettings.longitude = weatherStaging[i].longitude;
+            pageSettings.timeZone = weatherStaging[i].timeZone;
             metadataChanged = true;
         }
     }
+    const bool succeeded = weatherFetchSucceeded;
+    weatherPending = false;
+    xSemaphoreGive(trafficMutex);
 
     if (metadataChanged) {
         settingsStore.save(deviceSettings);
     }
 
-    showActiveWeatherPage(false);
-    return anySuccess;
+    if (!succeeded && !weatherPages[activeWeatherPageIndex].isValid) {
+        ui_show_error("Connection error");
+    } else {
+        showActiveWeatherPage(false);
+    }
+
+    return succeeded;
 }
 
 static void switchDisplayPage(int direction, bool skipPortalPage = false) {
@@ -835,10 +901,12 @@ void setup() {
 
     ui_init();
     ui_show_loading();
+    ui_flush();
 
     // Traffic is fetched on the core the UI does not run on, so the page never
     // blocks on the network.
     trafficMutex = xSemaphoreCreateMutex();
+    ui_flush();
     publishTrafficParameters();
     xTaskCreatePinnedToCore(trafficFetchTask, "traffic", 16384, nullptr, 1, nullptr, 0);
     touchController.begin();
@@ -886,10 +954,12 @@ void setup() {
     ui_hide_portal_page();
     showActiveWeatherPage(true);
     lastPortalQrPageVisible = portalQrPageAvailable();
-    weatherRefreshIntervalMs = WEATHER_UPDATE_INTERVAL;
+    weatherRefreshIntervalMs = baseWeatherRefreshIntervalMs();
+    lastWeatherFetch = millis() - weatherRefreshIntervalMs;
+    lastTrafficFetchStarted = millis() - TRAFFIC_UPDATE_INTERVAL_MS;
     consecutiveWeatherFailures = 0;
 
-    lastUpdate = millis() - WEATHER_UPDATE_INTERVAL;
+    lastUpdate = millis() - baseWeatherRefreshIntervalMs();
     lastReconnectAttempt = millis();
 }
 
@@ -948,7 +1018,7 @@ void loop() {
                 showingTrafficPage = false;
                 ui_hide_traffic_page();
                 showActiveWeatherPage(false);
-            } else if (consumeTrafficSnapshot() || (millis() - lastTrafficRender) >= 1000) {
+            } else if (consumeTrafficSnapshot() || (millis() - lastTrafficRender) >= 30000) {
                 lastTrafficRender = millis();
                 renderTrafficPage();
             }
@@ -965,17 +1035,15 @@ void loop() {
     }
 
     if (WiFi.status() == WL_CONNECTED && deviceSettings.hasWeatherCredentials()) {
-        if (millis() - lastUpdate >= weatherRefreshIntervalMs) {
-            if (fetchWeatherPages()) {
+        if (weatherPending) {
+            if (consumeWeatherSnapshot()) {
                 consecutiveWeatherFailures = 0;
-                weatherRefreshIntervalMs = WEATHER_UPDATE_INTERVAL;
+                weatherRefreshIntervalMs = baseWeatherRefreshIntervalMs();
             } else {
                 if (consecutiveWeatherFailures < 10) {
                     ++consecutiveWeatherFailures;
                 }
                 weatherRefreshIntervalMs = nextWeatherRefreshIntervalMs(consecutiveWeatherFailures);
-                Serial.print("Weather fetch backoff (ms): ");
-                Serial.println(weatherRefreshIntervalMs);
             }
             lastUpdate = millis();
         }

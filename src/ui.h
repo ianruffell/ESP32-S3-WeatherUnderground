@@ -6,6 +6,9 @@
 #include "aircraft.h"
 
 void ui_init();
+// Repaints the screen if anything changed since the last call. Called once per
+// main loop iteration so a batch of updates costs one redraw, not several.
+void ui_flush();
 void ui_update_weather(const WeatherData& data);
 void ui_update_astronomy(const char* sunrise, const char* sunset, float moon_phase);
 void ui_update_clock(const char* time_text, const char* date_text, unsigned long seconds_until_refresh, bool has_refresh_schedule);
